@@ -23,6 +23,7 @@ go vet ./...  # Run static analysis
 - **Calendar:** FullCalendar 6.x (https://fullcalendar.io/) with interaction plugin
 - **Auth:** Jira Cloud OAuth 2.0 (3LO)
 - **Target:** Single binary deployment
+- **HTTPS:** Let's Encrypt via `golang.org/x/crypto/acme/autocert` (enabled when PORT=443)
 
 ### Design Principles
 - Reduce dependencies wherever possible to simplify maintenance
@@ -56,6 +57,7 @@ The `../fitops` and `../timework` projects demonstrate preferred patterns:
 - OAuth 2.0 (3LO) for authentication (user-friendly, no API token setup)
 - Uses Jira REST API v3 (POST `/search/jql` endpoint)
 - OAuth scopes: `read:me`, `read:account`, `read:jira-user`, `read:jira-work`, `write:jira-work`, `read:servicedesk-request`, `write:servicedesk-request`
+- `offline_access` scope is added in code to obtain refresh tokens
 - Data hierarchy: Project → Issue → Worklog
 - External links use site URL obtained during OAuth flow
 

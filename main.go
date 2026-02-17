@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 //go:embed static
@@ -48,11 +50,47 @@ func main() {
 	}))
 
 	port := viper.GetInt("PORT")
-	addr := fmt.Sprintf(":%d", port)
 
-	logrus.Infof("Starting JiraTime server on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		logrus.Fatalf("Server failed: %v", err)
+	if port == 443 {
+		// HTTPS mode with Let's Encrypt
+		domain := viper.GetString("BASE_URL")
+		// Strip protocol prefix if present
+		domain = strings.TrimPrefix(domain, "https://")
+		domain = strings.TrimPrefix(domain, "http://")
+
+		certManager := autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(domain),
+			Cache:      autocert.DirCache("certs"),
+		}
+
+		server := &http.Server{
+			Addr:    ":https",
+			Handler: mux,
+			TLSConfig: &tls.Config{
+				GetCertificate: certManager.GetCertificate,
+			},
+		}
+
+		// HTTP server for ACME challenges and redirect to HTTPS
+		go func() {
+			logrus.Info("Starting HTTP server on :80 for ACME challenges")
+			if err := http.ListenAndServe(":http", certManager.HTTPHandler(nil)); err != nil {
+				logrus.Errorf("HTTP server failed: %v", err)
+			}
+		}()
+
+		logrus.Infof("Starting JiraTime server on :443 with Let's Encrypt for %s", domain)
+		if err := server.ListenAndServeTLS("", ""); err != nil {
+			logrus.Fatalf("Server failed: %v", err)
+		}
+	} else {
+		// HTTP mode
+		addr := fmt.Sprintf(":%d", port)
+		logrus.Infof("Starting JiraTime server on %s", addr)
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			logrus.Fatalf("Server failed: %v", err)
+		}
 	}
 }
 

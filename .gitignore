@@ -4,8 +4,12 @@ jiratime
 # Config with secrets
 config.toml
 
-# Token storage
+# Token and session storage
 tokens.json
+sessions.json
+
+# Let's Encrypt certificates
+certs/
 
 # IDE
 .idea/

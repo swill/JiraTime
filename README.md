@@ -89,6 +89,22 @@ make dev
 
 The server will start on the configured port (default: 8080).
 
+### 4. Production Deployment with HTTPS
+
+For production, JiraTime supports automatic HTTPS via Let's Encrypt:
+
+1. Set `PORT = 443` in your `config.toml`
+2. Set `BASE_URL` to your domain (e.g., `https://jiratime.example.com`)
+3. Ensure ports 80 and 443 are open (port 80 is needed for ACME challenges)
+4. Run the server - certificates are automatically obtained and renewed
+
+```toml
+PORT = 443
+BASE_URL = "https://jiratime.example.com"
+```
+
+Certificates are cached in the `certs/` directory.
+
 ## Usage
 
 ### First Login
@@ -179,7 +195,7 @@ Configure your weekly target in `config.toml` with `HOURS_TARGET`.
 | `JIRA_CLIENT_SECRET` | Yes | - | OAuth 2.0 Client Secret from Atlassian |
 | `BASE_URL` | Yes | - | URL where JiraTime is hosted |
 | `SESSION_SECRET` | Yes | - | Random string (32+ chars) for session signing |
-| `PORT` | No | 8080 | HTTP server port |
+| `PORT` | No | 8080 | HTTP server port (set to 443 for HTTPS with Let's Encrypt) |
 | `HOURS_TARGET` | No | 40 | Weekly hours target for the widget |
 | `ACTIVE_ISSUES_WEEKS` | No | 4 | Weeks of activity for Active Issues filter |
 | `DONE_ISSUES_WEEKS` | No | 2 | Weeks that Done issues remain visible |
@@ -262,8 +278,10 @@ jiratime/
 - Ensure you have worklogs in the visible date range
 
 ### Session expires frequently
-- The app automatically refreshes tokens, but if issues persist, try logging out and back in
-- Check that `tokens.json` is writable by the application
+- The app automatically refreshes tokens and persists sessions across restarts
+- Sessions are stored in `sessions.json` and tokens in `tokens.json`
+- Logout/login will restore your session without requiring OAuth re-authorization
+- If issues persist, delete `sessions.json` and `tokens.json` and re-authenticate
 
 ## License
 

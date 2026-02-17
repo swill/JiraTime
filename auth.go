@@ -20,11 +20,12 @@ import (
 )
 
 const (
-	jiraAuthURL     = "https://auth.atlassian.com/authorize"
-	jiraTokenURL    = "https://auth.atlassian.com/oauth/token"
-	jiraResourceURL = "https://api.atlassian.com/oauth/token/accessible-resources"
-	tokenFile       = "tokens.json"
-	sessionCookie   = "jiratime_session"
+	jiraAuthURL      = "https://auth.atlassian.com/authorize"
+	jiraTokenURL     = "https://auth.atlassian.com/oauth/token"
+	jiraResourceURL  = "https://api.atlassian.com/oauth/token/accessible-resources"
+	tokenFile        = "tokens.json"
+	sessionCookie    = "jiratime_session"
+	accountIDCookie  = "jiratime_account"
 )
 
 var (
@@ -49,11 +50,31 @@ func getOAuthConfig() *oauth2.Config {
 			"write:jira-work",
 			"read:servicedesk-request",
 			"write:servicedesk-request",
+			"offline_access",
 		},
 	}
 }
 
 func handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Check if user already has a valid session
+	session := getSessionFromRequest(r)
+	if session != nil {
+		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+		return
+	}
+
+	// Try to restore session from saved tokens (e.g., after logout)
+	accountID := getAccountIDCookie(r)
+	if accountID != "" {
+		sessionID := generateSessionID()
+		session := tryRestoreSession(accountID, sessionID)
+		if session != nil {
+			setSessionCookie(w, sessionID)
+			http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+			return
+		}
+	}
+
 	config := getOAuthConfig()
 	state := generateState()
 	setStateCookie(w, state)
@@ -63,6 +84,14 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	// Check for error response
+	if errCode := r.URL.Query().Get("error"); errCode != "" {
+		errDesc := r.URL.Query().Get("error_description")
+		logrus.Errorf("OAuth error: %s - %s", errCode, errDesc)
+		http.Error(w, "Authentication failed: "+errDesc, http.StatusBadRequest)
+		return
+	}
+
 	// Verify state
 	state := r.URL.Query().Get("state")
 	expectedState := getStateCookie(r)
@@ -117,9 +146,11 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := createSession(session)
 	setSessionCookie(w, sessionID)
+	setAccountIDCookie(w, user.AccountID)
 
-	// Save token for persistence
+	// Save token and session data for persistence
 	saveToken(user.AccountID, token)
+	saveSessionData(user.AccountID, session)
 
 	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 }
@@ -130,6 +161,8 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 		deleteSession(sessionID)
 	}
 	clearSessionCookie(w)
+	// Keep accountID cookie so we can restore session on next login without OAuth
+	// The saved tokens remain valid and can be used to restore the session
 	http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
 }
 
@@ -152,6 +185,7 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				logrus.Errorf("Failed to refresh token: %v", err)
 				deleteSession(getSessionCookie(r))
 				clearSessionCookie(w)
+				clearAccountIDCookie(w)
 				if strings.HasPrefix(r.URL.Path, "/api/") {
 					http.Error(w, "Session expired", http.StatusUnauthorized)
 				} else {
@@ -177,6 +211,17 @@ func getSessionFromRequest(r *http.Request) *UserSession {
 	session := sessions[sessionID]
 	sessionsLock.RUnlock()
 
+	if session != nil {
+		return session
+	}
+
+	// Session not in memory (server restart?) - try to restore from saved data
+	accountID := getAccountIDCookie(r)
+	if accountID == "" {
+		return nil
+	}
+
+	session = tryRestoreSession(accountID, sessionID)
 	return session
 }
 
@@ -361,4 +406,112 @@ func loadTokens() *StoredTokens {
 	}
 
 	return tokens
+}
+
+const sessionDataFile = "sessions.json"
+
+type StoredSessions struct {
+	Sessions map[string]*UserSession `json:"sessions"`
+}
+
+func setAccountIDCookie(w http.ResponseWriter, accountID string) {
+	sig := signSession(accountID)
+	http.SetCookie(w, &http.Cookie{
+		Name:     accountIDCookie,
+		Value:    accountID + "." + sig,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   strings.HasPrefix(viper.GetString("BASE_URL"), "https"),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   86400 * 30, // 30 days
+	})
+}
+
+func getAccountIDCookie(r *http.Request) string {
+	cookie, err := r.Cookie(accountIDCookie)
+	if err != nil {
+		return ""
+	}
+
+	parts := strings.SplitN(cookie.Value, ".", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+
+	accountID, sig := parts[0], parts[1]
+	if signSession(accountID) != sig {
+		return ""
+	}
+
+	return accountID
+}
+
+func clearAccountIDCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     accountIDCookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1,
+	})
+}
+
+func saveSessionData(accountID string, session *UserSession) {
+	stored := loadSessionData()
+	stored.Sessions[accountID] = session
+
+	data, err := json.MarshalIndent(stored, "", "  ")
+	if err != nil {
+		logrus.Errorf("Failed to marshal session data: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(sessionDataFile, data, 0600); err != nil {
+		logrus.Errorf("Failed to save session data: %v", err)
+	}
+}
+
+func loadSessionData() *StoredSessions {
+	stored := &StoredSessions{
+		Sessions: make(map[string]*UserSession),
+	}
+
+	data, err := os.ReadFile(sessionDataFile)
+	if err != nil {
+		return stored
+	}
+
+	if err := json.Unmarshal(data, stored); err != nil {
+		logrus.Errorf("Failed to unmarshal session data: %v", err)
+		return &StoredSessions{Sessions: make(map[string]*UserSession)}
+	}
+
+	return stored
+}
+
+func tryRestoreSession(accountID, sessionID string) *UserSession {
+	// Load saved session data
+	stored := loadSessionData()
+	session, ok := stored.Sessions[accountID]
+	if !ok {
+		return nil
+	}
+
+	// Load saved token
+	tokens := loadTokens()
+	token, ok := tokens.Tokens[accountID]
+	if !ok {
+		return nil
+	}
+
+	// Update session with current token
+	session.Token = token
+
+	// Re-register in memory
+	sessionsLock.Lock()
+	sessions[sessionID] = session
+	sessionsLock.Unlock()
+
+	logrus.Infof("Restored session for account %s", accountID)
+	return session
 }

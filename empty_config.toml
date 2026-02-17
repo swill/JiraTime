@@ -22,6 +22,7 @@ BASE_URL = "http://localhost:8080"
 SESSION_SECRET = ""
 
 # Server port (optional, defaults to 8080)
+# Set to 443 for HTTPS with automatic Let's Encrypt certificates
 PORT = 8080
 
 # Weekly hours target (optional, defaults to 40)
