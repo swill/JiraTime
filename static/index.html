@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JiraTime</title>
+    <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.css" rel="stylesheet">
+    <link href="/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h1>JiraTime</h1>
+                <div class="user-info" id="userInfo"></div>
+            </div>
+
+            <div class="search-container">
+                <input type="text" id="searchInput" placeholder="Search all Jira issues..." autocomplete="off">
+            </div>
+
+            <div class="hours-widget" id="hoursWidget">
+                <span class="hours-logged">0</span>/<span class="hours-target">40</span> hours
+            </div>
+
+            <div class="sidebar-section recent-section">
+                <h3>Recent Issues</h3>
+                <div id="recentIssues" class="issue-list"></div>
+            </div>
+
+            <div class="sidebar-section issues-section">
+                <h3>Active Issues</h3>
+                <div id="myIssues" class="issue-list"></div>
+            </div>
+
+            <div class="sidebar-section search-results-section hidden">
+                <h3>Search Results</h3>
+                <div id="searchResults" class="issue-list"></div>
+            </div>
+
+            <div class="sidebar-footer">
+                <button id="refreshBtn" class="btn btn-secondary">Refresh</button>
+                <a href="/logout" class="btn btn-secondary">Logout</a>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <button class="sidebar-toggle" id="sidebarToggle">☰</button>
+            <div id="calendar"></div>
+        </main>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+    </div>
+
+    <!-- Edit Dialog -->
+    <dialog id="editDialog">
+        <form id="editForm" method="dialog">
+            <h2 id="dialogTitle">Edit Time Entry</h2>
+
+            <div class="form-group">
+                <label for="eventIssue">Issue</label>
+                <input type="text" id="eventIssue" readonly>
+            </div>
+
+            <div class="form-group">
+                <label for="eventStart">Start</label>
+                <input type="datetime-local" id="eventStart" required>
+            </div>
+
+            <div class="form-group">
+                <label for="eventDuration">Duration (minutes)</label>
+                <input type="number" id="eventDuration" min="1" step="1" required>
+            </div>
+
+            <div class="form-group">
+                <label for="eventDescription">Description</label>
+                <textarea id="eventDescription" rows="3"></textarea>
+            </div>
+
+            <input type="hidden" id="eventId">
+            <input type="hidden" id="eventIssueKey">
+
+            <div class="dialog-buttons">
+                <button type="button" id="deleteBtn" class="btn btn-danger">Delete</button>
+                <div class="dialog-buttons-right">
+                    <button type="button" id="cancelBtn" class="btn btn-secondary">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                </div>
+            </div>
+        </form>
+    </dialog>
+
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>

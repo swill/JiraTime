@@ -1,0 +1,589 @@
+/* Reset and Base Styles */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: #f5f5f5;
+    color: #333;
+    line-height: 1.5;
+}
+
+/* Layout */
+.app-container {
+    display: flex;
+    min-height: 100vh;
+}
+
+/* Sidebar */
+.sidebar {
+    width: 300px;
+    background: #fff;
+    border-right: 1px solid #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    overflow-y: auto;
+    z-index: 100;
+    transition: transform 0.3s ease;
+}
+
+.sidebar-header {
+    padding: 16px;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.sidebar-header h1 {
+    font-size: 20px;
+    color: #0052cc;
+    margin-bottom: 8px;
+}
+
+.user-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #666;
+}
+
+.user-avatar {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+}
+
+.search-container {
+    padding: 12px 16px;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.search-container input {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.search-container input:focus {
+    outline: none;
+    border-color: #0052cc;
+}
+
+/* Hours Widget */
+.hours-widget {
+    padding: 12px 16px;
+    background: #f8f9fa;
+    border-bottom: 1px solid #e0e0e0;
+    font-size: 16px;
+    font-weight: 500;
+    text-align: center;
+}
+
+.hours-widget.under {
+    background: #ffebe6;
+    color: #bf2600;
+}
+
+.hours-widget.met {
+    background: #e3fcef;
+    color: #006644;
+}
+
+.hours-logged {
+    font-size: 24px;
+    font-weight: 700;
+}
+
+/* Sidebar Sections */
+.sidebar-section {
+    padding: 12px 16px;
+}
+
+.sidebar-section h3 {
+    font-size: 12px;
+    text-transform: uppercase;
+    color: #666;
+    margin-bottom: 8px;
+    letter-spacing: 0.5px;
+}
+
+/* Recent Issues - compact, no scroll */
+.recent-section {
+    flex-shrink: 0;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+/* Active Issues - scrollable with sticky header */
+.issues-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+}
+
+.issues-section h3 {
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    background: #fff;
+    padding-bottom: 8px;
+    margin-bottom: 0;
+    z-index: 1;
+}
+
+.issues-section .issue-list {
+    flex: 1;
+    overflow-y: auto;
+    padding-bottom: 8px;
+}
+
+/* Search Results section - takes priority over Active Issues when visible */
+.search-results-section {
+    flex: 2;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 100px;
+    border-top: 1px solid #e0e0e0;
+    padding: 12px 16px;
+}
+
+.search-results-section.hidden {
+    display: none;
+}
+
+.search-results-section h3 {
+    flex-shrink: 0;
+    font-size: 12px;
+    text-transform: uppercase;
+    color: #666;
+    letter-spacing: 0.5px;
+    background: #fff;
+    padding-bottom: 8px;
+    margin-bottom: 0;
+}
+
+.search-results-section .issue-list {
+    flex: 1;
+    overflow-y: auto;
+    padding-bottom: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* Issue List */
+.issue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.project-group {
+    margin-bottom: 12px;
+}
+
+.project-header {
+    padding: 8px 12px;
+    background: #f0f0f0;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.project-header:hover {
+    background: #e8e8e8;
+}
+
+.collapse-icon {
+    font-size: 10px;
+    transition: transform 0.2s;
+}
+
+.project-group.collapsed .collapse-icon {
+    transform: rotate(-90deg);
+}
+
+.project-group.collapsed .project-issues {
+    display: none;
+}
+
+.project-issues {
+    padding-left: 12px;
+    margin-top: 4px;
+}
+
+.issue-item {
+    padding: 8px 12px;
+    border-radius: 4px;
+    cursor: grab;
+    font-size: 13px;
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    transition: all 0.2s;
+    flex-shrink: 0;
+    min-height: 36px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.issue-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.issue-link {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #666;
+    text-decoration: none;
+    border-radius: 4px;
+    opacity: 0.3;
+    transition: opacity 0.2s, background-color 0.2s;
+    font-size: 14px;
+}
+
+.issue-item:hover .issue-link {
+    opacity: 1;
+}
+
+.issue-link:hover {
+    background-color: #e0e0e0;
+    color: #0052cc;
+}
+
+.issue-item:hover {
+    background: #f8f9fa;
+    border-color: #0052cc;
+}
+
+.issue-item:active {
+    cursor: grabbing;
+}
+
+.issue-item.selected {
+    background: #deebff;
+    border-color: #0052cc;
+    box-shadow: 0 0 0 2px rgba(0, 82, 204, 0.2);
+}
+
+.issue-key {
+    font-weight: 600;
+    color: #0052cc;
+}
+
+/* Sidebar Footer */
+.sidebar-footer {
+    padding: 16px;
+    border-top: 1px solid #e0e0e0;
+    display: flex;
+    gap: 8px;
+}
+
+/* Main Content */
+.main-content {
+    flex: 1;
+    margin-left: 300px;
+    padding: 16px;
+    position: relative;
+}
+
+.sidebar-toggle {
+    display: none;
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    z-index: 200;
+    background: #0052cc;
+    color: #fff;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 18px;
+}
+
+/* Calendar Styles */
+#calendar {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    padding: 16px;
+}
+
+.fc {
+    font-family: inherit;
+}
+
+.fc-toolbar-title {
+    font-size: 18px !important;
+}
+
+.fc-button-primary {
+    background-color: #0052cc !important;
+    border-color: #0052cc !important;
+}
+
+.fc-button-primary:hover {
+    background-color: #0747a6 !important;
+}
+
+.fc-button-primary:not(:disabled).fc-button-active {
+    background-color: #0747a6 !important;
+}
+
+.fc-event {
+    border: none;
+    border-radius: 4px;
+    padding: 2px 4px;
+    cursor: pointer;
+}
+
+.fc-event-title {
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fc-event.dimmed {
+    opacity: 0.3;
+}
+
+/* Remove FullCalendar's focus/selected styles when not wanted */
+.fc-event:focus {
+    outline: none;
+}
+
+.fc-event.fc-event-selected {
+    box-shadow: none;
+}
+
+/* Loading Overlay */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.loading-overlay.hidden {
+    display: none;
+}
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 4px solid #e0e0e0;
+    border-top-color: #0052cc;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Dialog Styles */
+dialog {
+    border: none;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    padding: 24px;
+    max-width: 400px;
+    width: 90%;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    margin: 0;
+}
+
+dialog::backdrop {
+    background: rgba(0, 0, 0, 0.5);
+}
+
+dialog h2 {
+    margin-bottom: 16px;
+    font-size: 18px;
+}
+
+.form-group {
+    margin-bottom: 16px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #666;
+}
+
+.form-group input,
+.form-group textarea {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+    font-family: inherit;
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
+    outline: none;
+    border-color: #0052cc;
+}
+
+.form-group input[readonly] {
+    background: #f5f5f5;
+    color: #666;
+}
+
+.dialog-buttons {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 24px;
+}
+
+.dialog-buttons-right {
+    display: flex;
+    gap: 8px;
+}
+
+/* Buttons */
+.btn {
+    padding: 8px 16px;
+    border-radius: 4px;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    display: inline-block;
+    text-align: center;
+}
+
+.btn-primary {
+    background: #0052cc;
+    color: #fff;
+}
+
+.btn-primary:hover {
+    background: #0747a6;
+}
+
+.btn-secondary {
+    background: #f0f0f0;
+    color: #333;
+}
+
+.btn-secondary:hover {
+    background: #e0e0e0;
+}
+
+.btn-danger {
+    background: #de350b;
+    color: #fff;
+}
+
+.btn-danger:hover {
+    background: #bf2600;
+}
+
+/* Mobile Styles */
+@media (max-width: 768px) {
+    .sidebar {
+        transform: translateX(-100%);
+    }
+
+    .sidebar.open {
+        transform: translateX(0);
+    }
+
+    .main-content {
+        margin-left: 0;
+    }
+
+    .sidebar-toggle {
+        display: block;
+    }
+
+    #calendar {
+        padding: 8px;
+    }
+
+    .fc-toolbar {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .fc-toolbar-chunk {
+        display: flex;
+        justify-content: center;
+    }
+}
+
+/* Draggable ghost styles */
+.fc-event-dragging {
+    opacity: 0.7;
+}
+
+/* External event being dragged */
+.issue-item.fc-dragging {
+    opacity: 0.7;
+    background: #0052cc;
+    color: #fff;
+}
+
+/* Toast notification for mobile */
+.toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    background: #333;
+    color: #fff;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-size: 14px;
+    z-index: 1001;
+    opacity: 0;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+    max-width: 90%;
+    text-align: center;
+}
+
+.toast.visible {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+}

@@ -1,0 +1,34 @@
+# JiraTime Configuration
+# Copy this file to config.toml and fill in the values
+
+# Jira Cloud OAuth 2.0 credentials
+# Create an app at https://developer.atlassian.com/console/myapps/
+# Required scopes:
+#   - read:me (User Identity API)
+#   - read:account (User Identity API)
+#   - read:jira-user (Jira)
+#   - read:jira-work (Jira)
+#   - write:jira-work (Jira)
+#   - read:servicedesk-request (Jira Service Management)
+#   - write:servicedesk-request (Jira Service Management)
+JIRA_CLIENT_ID = ""
+JIRA_CLIENT_SECRET = ""
+
+# Base URL of this application (used for OAuth callback)
+BASE_URL = "http://localhost:8080"
+
+# Session secret - must be at least 32 characters
+# Generate with: openssl rand -base64 32
+SESSION_SECRET = ""
+
+# Server port (optional, defaults to 8080)
+PORT = 8080
+
+# Weekly hours target (optional, defaults to 40)
+HOURS_TARGET = 40
+
+# Issue filtering periods (optional)
+# How many weeks of activity to consider for "Active Issues"
+ACTIVE_ISSUES_WEEKS = 4
+# How many weeks Done issues stay visible (for logging time on recently completed work)
+DONE_ISSUES_WEEKS = 2

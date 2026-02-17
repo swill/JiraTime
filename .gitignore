@@ -1,0 +1,18 @@
+# Binary
+jiratime
+
+# Config with secrets
+config.toml
+
+# Token storage
+tokens.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
