@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -180,7 +181,7 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		// Refresh token if needed
 		if session.Token.Expiry.Before(time.Now().Add(5 * time.Minute)) {
-			newToken, err := refreshToken(session.Token)
+			newToken, err := refreshToken(r.Context(), session.Token)
 			if err != nil {
 				logrus.Errorf("Failed to refresh token: %v", err)
 				deleteSession(getSessionCookie(r))
@@ -365,9 +366,9 @@ func getAccessibleResource(accessToken string) (string, string, error) {
 	return resources[0].ID, resources[0].URL, nil
 }
 
-func refreshToken(token *oauth2.Token) (*oauth2.Token, error) {
+func refreshToken(ctx context.Context, token *oauth2.Token) (*oauth2.Token, error) {
 	config := getOAuthConfig()
-	src := config.TokenSource(nil, token)
+	src := config.TokenSource(ctx, token)
 	newToken, err := src.Token()
 	if err != nil {
 		return nil, err
