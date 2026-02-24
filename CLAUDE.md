@@ -79,7 +79,6 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - Event resize for duration adjustment
 - Shift+drag to copy events
 - Custom event edit dialog (native `<dialog>` element)
-- Search dims non-matching events on calendar
 - Mobile responsive (auto-collapse sidebar, switch to day view)
 
 ### Mobile Interactions
@@ -124,6 +123,5 @@ The `../betterwork` codebase is useful for understanding the existing functional
 
 ## Design Decisions
 
-- **No billable/non-billable tracking** - not needed for this implementation
 - **Single Jira instance** - no multi-tenant support required
 - **Issues as primary entity** - users think in terms of issues, not tasks/subtasks

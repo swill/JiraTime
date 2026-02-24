@@ -801,8 +801,7 @@
             const query = e.target.value.trim();
             const queryLower = query.toLowerCase();
 
-            // Always filter local issues and highlight events
-            highlightMatchingEvents(queryLower);
+            // Filter local issues in sidebar
             filterSidebarIssues(queryLower);
 
             // Debounce the API search
@@ -857,25 +856,6 @@
     function hideSearchResults() {
         const section = document.querySelector('.search-results-section');
         section.classList.add('hidden');
-    }
-
-    function highlightMatchingEvents(query) {
-        const events = calendar.getEvents();
-        events.forEach(event => {
-            const el = event.el;
-
-            if (!query) {
-                if (el) el.classList.remove('dimmed');
-                return;
-            }
-
-            const matches = event.title.toLowerCase().includes(query) ||
-                           (event.extendedProps.description || '').toLowerCase().includes(query);
-
-            if (el) {
-                el.classList.toggle('dimmed', !matches);
-            }
-        });
     }
 
     function filterSidebarIssues(query) {

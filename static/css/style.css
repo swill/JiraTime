@@ -366,9 +366,6 @@ body {
     text-overflow: ellipsis;
 }
 
-.fc-event.dimmed {
-    opacity: 0.3;
-}
 
 /* Remove FullCalendar's focus/selected styles when not wanted */
 .fc-event:focus {

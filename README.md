@@ -11,7 +11,7 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
 - **Copy Events**: Shift+drag to duplicate an entry
 - **Edit Dialog**: Click any event to edit details or delete
 - **Hours Tracking**: Visual widget showing weekly hours vs. target
-- **Search**: Filter issues, search all Jira issues, and highlight matching calendar events
+- **Search**: Filter sidebar issues and search all Jira issues
 - **Custom Field Tracking**: Track time in custom numeric fields (e.g., Billable Time) with automatic totals
 - **Recent Issues**: Quick access to your 5 most recently used issues
 - **External Links**: Click the link icon on any issue to open it in Jira
@@ -200,7 +200,6 @@ On mobile devices (screen width < 768px):
 
 Type in the search box to:
 - Filter your active issues in the sidebar
-- Dim non-matching events on the calendar
 - **Search all Jira issues** (2+ characters) - results appear in a "Search Results" section, allowing you to log time on any issue
 
 ### Issue Filtering Criteria
