@@ -5,6 +5,18 @@ import (
 	"github.com/spf13/viper"
 )
 
+// Default custom time fields - these track time in minutes on issues
+var defaultCustomTimeFields = []CustomTimeField{
+	{ID: "customfield_11710", Label: "Billable Time"},
+	{ID: "customfield_11712", Label: "Smart Hands and Eyes"},
+	{ID: "customfield_12073", Label: "Smart Hands and Eyes (After Hours)"},
+}
+
+// GetCustomTimeFields returns the configured custom time fields
+func GetCustomTimeFields() []CustomTimeField {
+	return defaultCustomTimeFields
+}
+
 func initConfig() {
 	viper.SetConfigName("config")
 	viper.SetConfigType("toml")

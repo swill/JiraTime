@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -72,6 +73,14 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Handle custom field contributions if any selections provided
+	if len(req.CustomFieldSelections) > 0 {
+		if err := updateCustomFieldsForWorklog(r.Context(), client, req.IssueKey, worklog.ID, req.DurationMin, req.CustomFieldSelections, nil); err != nil {
+			logrus.Errorf("Failed to update custom fields: %v", err)
+			// Don't fail the request - worklog was created successfully
+		}
+	}
+
 	// Return the created event
 	event := CalendarEvent{
 		ID:          req.IssueKey + "-" + worklog.ID,
@@ -125,11 +134,30 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 	durationSeconds := req.DurationMin * 60
 
 	client := NewJiraClient(session.Token, session.CloudID)
+
+	// Get previous contributions before update (only if custom field selections provided)
+	var previousContributions *CustomFieldContributions
+	if req.CustomFieldSelections != nil {
+		previousContributions, err = client.GetWorklogProperty(r.Context(), issueKey, worklogID, worklogPropertyKey)
+		if err != nil {
+			logrus.Warnf("Failed to get previous contributions: %v", err)
+			previousContributions = &CustomFieldContributions{Contributions: make(map[string]int)}
+		}
+	}
+
 	_, err = client.UpdateWorklog(r.Context(), issueKey, worklogID, start, durationSeconds, req.Description)
 	if err != nil {
 		logrus.Errorf("Failed to update worklog: %v", err)
 		http.Error(w, "Failed to update event", http.StatusInternalServerError)
 		return
+	}
+
+	// Handle custom field contributions if selections provided
+	if req.CustomFieldSelections != nil {
+		if err := updateCustomFieldsForWorklog(r.Context(), client, issueKey, worklogID, req.DurationMin, req.CustomFieldSelections, previousContributions); err != nil {
+			logrus.Errorf("Failed to update custom fields: %v", err)
+			// Don't fail the request - worklog was updated successfully
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -160,6 +188,13 @@ func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 	worklogID := eventID[lastDash+1:]
 
 	client := NewJiraClient(session.Token, session.CloudID)
+
+	// Remove custom field contributions before deleting worklog
+	if err := removeCustomFieldContributions(r.Context(), client, issueKey, worklogID); err != nil {
+		logrus.Warnf("Failed to remove custom field contributions: %v", err)
+		// Continue with delete even if contribution removal fails
+	}
+
 	if err := client.DeleteWorklog(r.Context(), issueKey, worklogID); err != nil {
 		logrus.Errorf("Failed to delete worklog: %v", err)
 		http.Error(w, "Failed to delete event", http.StatusInternalServerError)
@@ -306,4 +341,213 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		logrus.Errorf("Failed to encode JSON response: %v", err)
 	}
+}
+
+// Worklog property key for custom field contributions
+const worklogPropertyKey = "jiratime.customFieldContributions"
+
+// handleGetIssueCustomFields returns available custom fields and their current values for an issue
+func handleGetIssueCustomFields(w http.ResponseWriter, r *http.Request) {
+	session := getSessionFromRequest(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract issue key from URL path: /api/issues/{key}/custom-fields
+	path := strings.TrimPrefix(r.URL.Path, "/api/issues/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[1] != "custom-fields" {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	issueKey := parts[0]
+
+	customFields := GetCustomTimeFields()
+	fieldIDs := make([]string, len(customFields))
+	for i, cf := range customFields {
+		fieldIDs[i] = cf.ID
+	}
+
+	client := NewJiraClient(session.Token, session.CloudID)
+	values, err := client.GetIssueCustomFields(r.Context(), issueKey, fieldIDs)
+	if err != nil {
+		logrus.Errorf("Failed to get custom fields for issue %s: %v", issueKey, err)
+		// Return fields as unavailable rather than erroring
+		result := make([]CustomFieldInfo, len(customFields))
+		for i, cf := range customFields {
+			result[i] = CustomFieldInfo{
+				ID:        cf.ID,
+				Label:     cf.Label,
+				Available: false,
+			}
+		}
+		writeJSON(w, result)
+		return
+	}
+
+	// Build response with availability info
+	result := make([]CustomFieldInfo, len(customFields))
+	for i, cf := range customFields {
+		info := CustomFieldInfo{
+			ID:        cf.ID,
+			Label:     cf.Label,
+			Available: false,
+		}
+		if val, ok := values[cf.ID]; ok {
+			info.Available = true
+			info.CurrentValue = val
+		}
+		result[i] = info
+	}
+
+	writeJSON(w, result)
+}
+
+// handleGetEventContributions returns the custom field contributions for a specific worklog
+func handleGetEventContributions(w http.ResponseWriter, r *http.Request) {
+	session := getSessionFromRequest(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract event ID from URL path: /api/events/{id}/contributions
+	path := strings.TrimPrefix(r.URL.Path, "/api/events/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[1] != "contributions" {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	eventID := parts[0]
+
+	// Parse event ID: {issueKey}-{worklogID}
+	lastDash := strings.LastIndex(eventID, "-")
+	if lastDash == -1 {
+		http.Error(w, "Invalid event ID format", http.StatusBadRequest)
+		return
+	}
+	issueKey := eventID[:lastDash]
+	worklogID := eventID[lastDash+1:]
+
+	client := NewJiraClient(session.Token, session.CloudID)
+	contributions, err := client.GetWorklogProperty(r.Context(), issueKey, worklogID, worklogPropertyKey)
+	if err != nil {
+		logrus.Errorf("Failed to get worklog contributions: %v", err)
+		// Return empty contributions on error
+		writeJSON(w, CustomFieldContributions{Contributions: make(map[string]int)})
+		return
+	}
+
+	writeJSON(w, contributions)
+}
+
+// updateCustomFieldsForWorklog handles custom field updates for create/update operations
+func updateCustomFieldsForWorklog(ctx context.Context, client *JiraClient, issueKey, worklogID string, durationMin int, selections map[string]bool, previousContributions *CustomFieldContributions) error {
+	customFields := GetCustomTimeFields()
+
+	// Get current field values
+	fieldIDs := make([]string, len(customFields))
+	for i, cf := range customFields {
+		fieldIDs[i] = cf.ID
+	}
+
+	currentValues, err := client.GetIssueCustomFields(ctx, issueKey, fieldIDs)
+	if err != nil {
+		logrus.Warnf("Failed to get current custom field values: %v", err)
+		currentValues = make(map[string]int)
+	}
+
+	// Calculate new contributions
+	newContributions := make(map[string]int)
+	for _, cf := range customFields {
+		if selections != nil && selections[cf.ID] {
+			newContributions[cf.ID] = durationMin
+		}
+	}
+
+	// Apply deltas to each field
+	for _, cf := range customFields {
+		oldContribution := 0
+		if previousContributions != nil {
+			oldContribution = previousContributions.Contributions[cf.ID]
+		}
+		newContribution := newContributions[cf.ID]
+
+		delta := newContribution - oldContribution
+		if delta == 0 {
+			continue
+		}
+
+		// Calculate new value (floor at 0)
+		currentValue := currentValues[cf.ID]
+		newValue := currentValue + delta
+		if newValue < 0 {
+			newValue = 0
+		}
+
+		if err := client.UpdateIssueCustomField(ctx, issueKey, cf.ID, newValue); err != nil {
+			logrus.Warnf("Failed to update custom field %s: %v", cf.ID, err)
+			// Continue with other fields
+		}
+	}
+
+	// Store new contributions if any, or delete property if empty
+	if len(newContributions) > 0 {
+		if err := client.SetWorklogProperty(ctx, issueKey, worklogID, worklogPropertyKey, CustomFieldContributions{Contributions: newContributions}); err != nil {
+			logrus.Warnf("Failed to store worklog contributions: %v", err)
+		}
+	} else if previousContributions != nil && len(previousContributions.Contributions) > 0 {
+		// Had contributions before but now none - delete the property
+		if err := client.DeleteWorklogProperty(ctx, issueKey, worklogID, worklogPropertyKey); err != nil {
+			logrus.Warnf("Failed to delete worklog contributions: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// removeCustomFieldContributions removes a worklog's contributions from custom fields
+func removeCustomFieldContributions(ctx context.Context, client *JiraClient, issueKey, worklogID string) error {
+	// Get existing contributions
+	contributions, err := client.GetWorklogProperty(ctx, issueKey, worklogID, worklogPropertyKey)
+	if err != nil {
+		logrus.Warnf("Failed to get worklog contributions for removal: %v", err)
+		return nil // Don't fail delete if we can't get contributions
+	}
+
+	if contributions == nil || len(contributions.Contributions) == 0 {
+		return nil // Nothing to remove
+	}
+
+	customFields := GetCustomTimeFields()
+	fieldIDs := make([]string, len(customFields))
+	for i, cf := range customFields {
+		fieldIDs[i] = cf.ID
+	}
+
+	currentValues, err := client.GetIssueCustomFields(ctx, issueKey, fieldIDs)
+	if err != nil {
+		logrus.Warnf("Failed to get current custom field values for removal: %v", err)
+		return nil
+	}
+
+	// Subtract contributions from each field
+	for fieldID, contribution := range contributions.Contributions {
+		if contribution == 0 {
+			continue
+		}
+
+		currentValue := currentValues[fieldID]
+		newValue := currentValue - contribution
+		if newValue < 0 {
+			newValue = 0
+		}
+
+		if err := client.UpdateIssueCustomField(ctx, issueKey, fieldID, newValue); err != nil {
+			logrus.Warnf("Failed to update custom field %s during removal: %v", fieldID, err)
+		}
+	}
+
+	return nil
 }

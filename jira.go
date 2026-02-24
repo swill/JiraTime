@@ -401,3 +401,155 @@ func buildADFComment(text string) map[string]interface{} {
 		},
 	}
 }
+
+// GetIssueCustomFields fetches the current values of specified custom fields for an issue
+func (c *JiraClient) GetIssueCustomFields(ctx context.Context, issueKey string, fieldIDs []string) (map[string]int, error) {
+	// Build fields parameter
+	fields := make([]string, len(fieldIDs))
+	copy(fields, fieldIDs)
+
+	endpoint := fmt.Sprintf("/issue/%s?fields=%s", issueKey, joinStrings(fields, ","))
+	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get issue custom fields failed: %d %s", resp.StatusCode, body)
+	}
+
+	var result struct {
+		Fields map[string]interface{} `json:"fields"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	// Extract numeric values from custom fields
+	values := make(map[string]int)
+	for _, fieldID := range fieldIDs {
+		if val, ok := result.Fields[fieldID]; ok && val != nil {
+			switch v := val.(type) {
+			case float64:
+				values[fieldID] = int(v)
+			case int:
+				values[fieldID] = v
+			}
+		}
+	}
+
+	return values, nil
+}
+
+// UpdateIssueCustomField updates a numeric custom field on an issue
+func (c *JiraClient) UpdateIssueCustomField(ctx context.Context, issueKey, fieldID string, value int) error {
+	endpoint := fmt.Sprintf("/issue/%s", issueKey)
+
+	body := map[string]interface{}{
+		"fields": map[string]interface{}{
+			fieldID: value,
+		},
+	}
+
+	resp, err := c.doRequest(ctx, "PUT", endpoint, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("update issue custom field failed: %d %s", resp.StatusCode, respBody)
+	}
+
+	return nil
+}
+
+// SetWorklogProperty stores a property on a worklog
+func (c *JiraClient) SetWorklogProperty(ctx context.Context, issueKey, worklogID, propertyKey string, value interface{}) error {
+	endpoint := fmt.Sprintf("/issue/%s/worklog/%s/properties/%s", issueKey, worklogID, propertyKey)
+
+	resp, err := c.doRequest(ctx, "PUT", endpoint, value)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("set worklog property failed: %d %s", resp.StatusCode, respBody)
+	}
+
+	return nil
+}
+
+// GetWorklogProperty retrieves a property from a worklog
+func (c *JiraClient) GetWorklogProperty(ctx context.Context, issueKey, worklogID, propertyKey string) (*CustomFieldContributions, error) {
+	endpoint := fmt.Sprintf("/issue/%s/worklog/%s/properties/%s", issueKey, worklogID, propertyKey)
+
+	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// 404 means property doesn't exist - return empty contributions
+	if resp.StatusCode == http.StatusNotFound {
+		return &CustomFieldContributions{Contributions: make(map[string]int)}, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get worklog property failed: %d %s", resp.StatusCode, body)
+	}
+
+	var result struct {
+		Value CustomFieldContributions `json:"value"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	if result.Value.Contributions == nil {
+		result.Value.Contributions = make(map[string]int)
+	}
+
+	return &result.Value, nil
+}
+
+// DeleteWorklogProperty removes a property from a worklog
+func (c *JiraClient) DeleteWorklogProperty(ctx context.Context, issueKey, worklogID, propertyKey string) error {
+	endpoint := fmt.Sprintf("/issue/%s/worklog/%s/properties/%s", issueKey, worklogID, propertyKey)
+
+	resp, err := c.doRequest(ctx, "DELETE", endpoint, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// 404 is okay - property didn't exist
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete worklog property failed: %d %s", resp.StatusCode, body)
+	}
+
+	return nil
+}
+
+// joinStrings joins strings with a separator
+func joinStrings(strs []string, sep string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	result := strs[0]
+	for i := 1; i < len(strs); i++ {
+		result += sep + strs[i]
+	}
+	return result
+}

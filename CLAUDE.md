@@ -104,6 +104,18 @@ The `../betterwork` codebase is useful for understanding the existing functional
   - If data is missing: open edit dialog to complete
 - Resizing or moving updates the entry
 
+### Custom Field Handling
+- The following custom fields on Issues are used to track the total number of minutes in a given category
+  - `customfield_11710` - Billable Time
+  - `customfield_11712` - Smart Hands and Eyes
+  - `customfield_12073` - Smart Hands and Eyes (After Hours)
+- If any of these custom fields are present on an issue, the JiraTime time edit popup should include a checkbox per appropriate custom field
+- If the checkbox is checked, the duration of the worklog should be added to the value of the appropriate custom field
+- If the checkbox was checked and is unchecked, then the duration of the worklog should be removed from the value of the appropriate custom field
+- If the checkbox was checked and the worklog is deleted, then the duration of the worklog should be removed from the value of the appropriate custom field
+- If the checkbox is checked and the worklog duration changes, the change in duration should be reflected in the value of the custom field (example: If the duration changes from 90 to 60 minutes, then 30 minutes is removed from the custom field, etc)
+- The "checked" status of the appropriate custom field checkbox and the duration value contributed to the custom field value should be tracked in the work log properties (API: `/rest/api/3/issue/{issueIdOrKey}/worklog/{worklogId}/properties/{propertyKey}`)
+
 ## Design Decisions
 
 - **No billable/non-billable tracking** - not needed for this implementation

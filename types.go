@@ -46,17 +46,19 @@ type CalendarEvent struct {
 
 // CreateEventReq is the request body for creating a worklog
 type CreateEventReq struct {
-	IssueKey    string `json:"issue_key"`
-	Start       string `json:"start"` // ISO 8601 format
-	DurationMin int    `json:"duration_min"`
-	Description string `json:"description,omitempty"`
+	IssueKey              string          `json:"issue_key"`
+	Start                 string          `json:"start"` // ISO 8601 format
+	DurationMin           int             `json:"duration_min"`
+	Description           string          `json:"description,omitempty"`
+	CustomFieldSelections map[string]bool `json:"custom_field_selections,omitempty"`
 }
 
 // UpdateEventReq is the request body for updating a worklog
 type UpdateEventReq struct {
-	Start       string `json:"start,omitempty"` // ISO 8601 format
-	DurationMin int    `json:"duration_min,omitempty"`
-	Description string `json:"description,omitempty"`
+	Start                 string          `json:"start,omitempty"` // ISO 8601 format
+	DurationMin           int             `json:"duration_min,omitempty"`
+	Description           string          `json:"description,omitempty"`
+	CustomFieldSelections map[string]bool `json:"custom_field_selections,omitempty"`
 }
 
 // HoursSummary represents weekly hours tracking
@@ -128,4 +130,23 @@ type JiraWorklogResponse struct {
 // StoredTokens holds refresh tokens for persistence
 type StoredTokens struct {
 	Tokens map[string]*oauth2.Token `json:"tokens"` // keyed by account_id
+}
+
+// CustomTimeField represents a custom field that tracks time in minutes
+type CustomTimeField struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// CustomFieldContributions tracks how much time a worklog has contributed to custom fields
+type CustomFieldContributions struct {
+	Contributions map[string]int `json:"contributions"` // fieldID -> minutes contributed
+}
+
+// CustomFieldInfo represents the state of a custom field for an issue
+type CustomFieldInfo struct {
+	ID           string `json:"id"`
+	Label        string `json:"label"`
+	CurrentValue int    `json:"current_value"` // Current value in minutes
+	Available    bool   `json:"available"`     // Whether field exists on the issue
 }

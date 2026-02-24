@@ -31,6 +31,7 @@ func main() {
 	mux.HandleFunc("/api/events/", requireAuth(handleEventByID))
 	mux.HandleFunc("/api/issues", requireAuth(handleGetIssues))
 	mux.HandleFunc("/api/issues/search", requireAuth(handleSearchIssues))
+	mux.HandleFunc("/api/issues/", requireAuth(handleIssueByKey)) // For /api/issues/{key}/custom-fields
 	mux.HandleFunc("/api/hours", requireAuth(handleGetHours))
 	mux.HandleFunc("/api/refresh", requireAuth(handleRefresh))
 	mux.HandleFunc("/api/user", requireAuth(handleGetUser))
@@ -107,9 +108,19 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 
 func handleEventByID(w http.ResponseWriter, r *http.Request) {
 	// Check if this is an actual event ID request (not just /api/events/)
-	eventID := strings.TrimPrefix(r.URL.Path, "/api/events/")
-	if eventID == "" {
+	path := strings.TrimPrefix(r.URL.Path, "/api/events/")
+	if path == "" {
 		http.Error(w, "Event ID required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if this is a contributions request: /api/events/{id}/contributions
+	if strings.HasSuffix(path, "/contributions") {
+		if r.Method == http.MethodGet {
+			handleGetEventContributions(w, r)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -121,4 +132,24 @@ func handleEventByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func handleIssueByKey(w http.ResponseWriter, r *http.Request) {
+	// Check for /api/issues/{key}/custom-fields
+	path := strings.TrimPrefix(r.URL.Path, "/api/issues/")
+	if path == "" {
+		http.Error(w, "Issue key required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.HasSuffix(path, "/custom-fields") {
+		if r.Method == http.MethodGet {
+			handleGetIssueCustomFields(w, r)
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	http.Error(w, "Not found", http.StatusNotFound)
 }
