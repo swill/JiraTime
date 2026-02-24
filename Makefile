@@ -1,4 +1,4 @@
-.PHONY: build compile deploy deps dev clean test vet
+.PHONY: build compile deploy deps dev clean
 
 # Cross compile for different platforms
 compile:
@@ -18,14 +18,6 @@ dev:
 clean:
 	rm -f jiratime
 	rm -f tokens.json
-
-# Run tests
-test:
-	go test ./...
-
-# Run static analysis
-vet:
-	go vet ./...
 
 # Install dependencies
 deps:

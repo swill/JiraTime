@@ -13,8 +13,6 @@ make build    # Build Go binary
 make compile  # Cross-compile for Linux/macOS/Windows (outputs to bin/)
 make dev      # Run development server
 make deploy   # Deploy to remote server (requires __config.sh)
-go test ./... # Run all tests
-go vet ./...  # Run static analysis
 ```
 
 ## Architecture

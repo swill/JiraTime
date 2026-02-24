@@ -278,12 +278,6 @@ make compile
 # Run development server
 make dev
 
-# Run tests
-make test
-
-# Run static analysis
-make vet
-
 # Clean build artifacts
 make clean
 
