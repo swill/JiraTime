@@ -193,7 +193,6 @@ On mobile devices (screen width < 768px):
 **Editing entries:**
 - **Single tap** on an event = select it (enables drag/resize handles)
 - **Double tap** on an event = open the edit dialog
-- **Long press** (hold ~500ms) on an event = open the edit dialog
 - After selecting, press and hold briefly (~100ms) to drag or resize
 - Edit dialog allows precise control of start time and duration
 

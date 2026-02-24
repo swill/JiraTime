@@ -49,7 +49,6 @@
             await loadUserInfo();
             await loadIssues();
             initCalendar();
-            setupLongPressForEvents();
             initSidebar();
             initSearch();
             initDialog();
@@ -155,9 +154,7 @@
     // Event Handlers
     let lastTapTime = 0;
     let lastTapEventId = null;
-    let longPressTimer = null;
     const DOUBLE_TAP_DELAY = 300; // ms
-    const LONG_PRESS_DELAY = 500; // ms
 
     function handleEventClick(info) {
         const event = info.event;
@@ -187,45 +184,6 @@
             lastTapTime = now;
             lastTapEventId = eventId;
         }
-    }
-
-    function setupLongPressForEvents() {
-        // Use event delegation for long press on calendar events
-        const calendarEl = document.getElementById('calendar');
-
-        calendarEl.addEventListener('touchstart', (e) => {
-            const eventEl = e.target.closest('.fc-event');
-            if (!eventEl || !isMobileView()) return;
-
-            longPressTimer = setTimeout(() => {
-                // Find the FullCalendar event from the element
-                const events = calendar.getEvents();
-                for (const event of events) {
-                    if (event.el === eventEl || eventEl.closest('.fc-event') === event.el) {
-                        if (event.extendedProps && event.extendedProps.worklogId) {
-                            // Prevent the default context menu
-                            e.preventDefault();
-                            openEditDialog(event);
-                        }
-                        break;
-                    }
-                }
-            }, LONG_PRESS_DELAY);
-        }, { passive: false });
-
-        calendarEl.addEventListener('touchend', () => {
-            if (longPressTimer) {
-                clearTimeout(longPressTimer);
-                longPressTimer = null;
-            }
-        });
-
-        calendarEl.addEventListener('touchmove', () => {
-            if (longPressTimer) {
-                clearTimeout(longPressTimer);
-                longPressTimer = null;
-            }
-        });
     }
 
     async function handleEventDrop(info) {

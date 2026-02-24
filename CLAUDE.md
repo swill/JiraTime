@@ -88,7 +88,6 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - **Tap-to-create:** Tap issue in sidebar to select, then tap calendar to create entry
 - **Single tap on event:** Select event (enables drag/resize handles)
 - **Double tap on event:** Open edit dialog
-- **Long press on event (~500ms):** Open edit dialog
 
 ### Sidebar
 - **Recent Issues:** 5 most recently used issues for quick access (stored in cookie)
