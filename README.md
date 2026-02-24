@@ -12,6 +12,7 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
 - **Edit Dialog**: Click any event to edit details or delete
 - **Hours Tracking**: Visual widget showing weekly hours vs. target
 - **Search**: Filter issues, search all Jira issues, and highlight matching calendar events
+- **Custom Field Tracking**: Track time in custom numeric fields (e.g., Billable Time) with automatic totals
 - **Recent Issues**: Quick access to your 5 most recently used issues
 - **External Links**: Click the link icon on any issue to open it in Jira
 - **Mobile Responsive**: Collapsible sidebar, day view, and tap-to-create workflow
@@ -105,6 +106,47 @@ BASE_URL = "https://jiratime.example.com"
 
 Certificates are cached in the `certs/` directory.
 
+### 5. Remote Server Deployment
+
+JiraTime includes a `make deploy` command for deploying to a remote Linux server using Supervisor for process management.
+
+**Setup:**
+
+1. Copy the deployment config example:
+   ```bash
+   cp __config.sh.example __config.sh
+   ```
+
+2. Edit `__config.sh` with your server details:
+   ```bash
+   USER=youruser
+   GROUP=yourgroup
+   SERVER=yourserver.com
+   ```
+
+3. Create a production config:
+   ```bash
+   cp config.toml config.prod.toml
+   # Edit config.prod.toml with production values (BASE_URL, PORT=443, etc.)
+   ```
+
+4. Cross-compile and deploy:
+   ```bash
+   make compile
+   make deploy
+   ```
+
+**What `make deploy` does:**
+- Copies the Linux binary to `/home/$USER/jiratime/`
+- Copies and configures `supervisor.conf` for the target server
+- Copies `config.prod.toml` as `config.toml`
+- Installs the Supervisor config and restarts the service
+
+**Server Requirements:**
+- SSH access with key authentication
+- Supervisor installed (`apt install supervisor`)
+- Ports 80 and 443 open (if using HTTPS)
+
 ## Usage
 
 ### First Login
@@ -179,6 +221,29 @@ These time periods are configurable via `ACTIVE_ISSUES_WEEKS` and `DONE_ISSUES_W
 
 **Search Results** may include some issues also shown in Active Issues.
 
+### Custom Field Tracking
+
+JiraTime can track worklog time in custom numeric fields on Jira issues. This is useful for tracking categories like billable time or specific work types.
+
+**Supported Custom Fields:**
+| Field ID | Label |
+|----------|-------|
+| `customfield_11710` | Billable Time |
+| `customfield_11712` | Smart Hands and Eyes |
+| `customfield_12073` | Smart Hands and Eyes (After Hours) |
+
+**How it works:**
+1. When editing a time entry, checkboxes appear for any custom fields available on that issue
+2. Check a field to add the worklog's duration to that field's running total
+3. The current total (in hours) is shown next to each checkbox
+4. Unchecking a field removes the worklog's contribution from the total
+5. Deleting a worklog automatically removes its contributions from all custom fields
+
+**Notes:**
+- Custom fields must already exist on the Jira issue to appear as options
+- Contributions are tracked per-worklog using Jira's worklog properties API
+- If a worklog's duration changes, the delta is applied to checked custom fields
+
 ### Hours Widget
 
 The hours widget shows your logged hours for the current week:
@@ -208,6 +273,9 @@ Environment variables can override config file values (e.g., `JIRA_CLIENT_ID=xxx
 # Build binary
 make build
 
+# Cross-compile for Linux/macOS/Windows
+make compile
+
 # Run development server
 make dev
 
@@ -222,25 +290,32 @@ make clean
 
 # Install/update dependencies
 make deps
+
+# Deploy to remote server (see Deployment section)
+make deploy
 ```
 
 ## Project Structure
 
 ```
 jiratime/
-├── main.go           # Entry point, routes, embedded static files
-├── config.go         # Viper configuration loading
-├── auth.go           # OAuth 2.0 flow and session management
-├── jira.go           # Jira REST API client
-├── handlers.go       # HTTP request handlers
-├── types.go          # Data structures
-├── cache.go          # In-memory caching
+├── main.go              # Entry point, routes, embedded static files
+├── config.go            # Viper configuration loading
+├── auth.go              # OAuth 2.0 flow and session management
+├── jira.go              # Jira REST API client
+├── handlers.go          # HTTP request handlers
+├── types.go             # Data structures
+├── cache.go             # In-memory caching
 ├── static/
-│   ├── index.html    # Main page
-│   ├── js/app.js     # Calendar and UI logic
-│   └── css/style.css # Styling
-├── config.toml       # Your configuration (gitignored)
-├── empty_config.toml # Configuration template
+│   ├── index.html       # Main page
+│   ├── js/app.js        # Calendar and UI logic
+│   └── css/style.css    # Styling
+├── config.toml          # Your configuration (gitignored)
+├── config.prod.toml     # Production configuration (gitignored)
+├── empty_config.toml    # Configuration template
+├── __config.sh          # Deployment variables (gitignored)
+├── __config.sh.example  # Deployment variables template
+├── supervisor.conf      # Supervisor process config
 └── Makefile
 ```
 
@@ -256,8 +331,10 @@ jiratime/
 | POST | `/api/events` | Create a worklog |
 | PUT | `/api/events/{id}` | Update a worklog |
 | DELETE | `/api/events/{id}` | Delete a worklog |
+| GET | `/api/events/{id}/contributions` | Get worklog's custom field contributions |
 | GET | `/api/issues` | Get issues assigned to current user |
 | GET | `/api/issues/search?q=X` | Search all Jira issues by text |
+| GET | `/api/issues/{key}/custom-fields` | Get available custom fields for an issue |
 | GET | `/api/hours?week=X` | Get weekly hours summary |
 | POST | `/api/refresh` | Force cache refresh |
 | GET | `/api/user` | Get current user info |

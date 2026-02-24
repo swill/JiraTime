@@ -9,8 +9,10 @@ JiraTime is a Go application for calendar-based Jira time tracking. It replaces 
 ## Build Commands
 
 ```bash
-make          # Build frontend and Go binary
+make build    # Build Go binary
+make compile  # Cross-compile for Linux/macOS/Windows (outputs to bin/)
 make dev      # Run development server
+make deploy   # Deploy to remote server (requires __config.sh)
 go test ./... # Run all tests
 go vet ./...  # Run static analysis
 ```
@@ -60,6 +62,13 @@ The `../fitops` and `../timework` projects demonstrate preferred patterns:
 - `offline_access` scope is added in code to obtain refresh tokens
 - Data hierarchy: Project → Issue → Worklog
 - External links use site URL obtained during OAuth flow
+
+### Deployment
+- Remote deployment via `make deploy` using Supervisor for process management
+- Deployment config in `__config.sh` (gitignored): `USER`, `GROUP`, `SERVER` variables
+- Production config in `config.prod.toml` (gitignored)
+- `supervisor.conf` template is copied and paths are adjusted via sed on the remote server
+- Binary is cross-compiled for Linux via `make compile`
 
 ### Reference Implementation
 The `../betterwork` codebase is useful for understanding the existing functionality and user workflows, but should not dictate code structure. Follow Go best practices for project organization rather than mirroring betterwork's layout.
