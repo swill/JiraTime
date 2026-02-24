@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+# Deployment configuration
+# Copy this file to __config.sh and fill in your values
+# __config.sh is ignored by git to keep your credentials secure
+
+USER="your-ssh-user"
+GROUP="your-user-group"
+SERVER="your-server.com"

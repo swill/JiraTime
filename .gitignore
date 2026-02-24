@@ -4,6 +4,8 @@ bin/
 
 # Config with secrets
 config.toml
+config.prod.toml
+__config.sh
 
 # Token and session storage
 tokens.json
