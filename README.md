@@ -203,6 +203,8 @@ Type in the search box to:
 - Filter your active issues in the sidebar
 - **Search all Jira issues** (2+ characters) - results appear in a "Search Results" section, allowing you to log time on any issue
 
+Search supports partial matching - typing "test" will match "testing", "testify", etc. This also works for issue keys: typing "ABC" matches ABC-1, ABC-123, etc.
+
 ### Issue Filtering Criteria
 
 **Active Issues** shows issues where you are:

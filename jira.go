@@ -144,7 +144,8 @@ func (c *JiraClient) SearchIssues(ctx context.Context, query string) ([]Issue, e
 	// Apply Done filter for consistency with Active Issues
 	doneWeeks := viper.GetInt("DONE_ISSUES_WEEKS")
 
-	jql := fmt.Sprintf("(summary ~ \"%s\" OR key = \"%s\" OR description ~ \"%s\") AND (statusCategory != Done OR (statusCategory = Done AND statusCategoryChangedDate >= -%dw)) ORDER BY updated DESC", query, query, query, doneWeeks)
+	// Use wildcard (*) for partial matching in summary, key, and description
+	jql := fmt.Sprintf("(summary ~ \"%s*\" OR key ~ \"%s*\" OR description ~ \"%s*\") AND (statusCategory != Done OR (statusCategory = Done AND statusCategoryChangedDate >= -%dw)) ORDER BY updated DESC", query, query, query, doneWeeks)
 
 	searchReq := map[string]interface{}{
 		"jql":        jql,

@@ -97,6 +97,7 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - **Search Results:** Search all Jira issues (not just assigned), returns up to 100 results
   - Appears when search query is 2+ characters
   - Uses remaining sidebar space with scrollable list
+  - Supports partial matching via JQL wildcards (e.g., "test" matches "testing", "ABC" matches "ABC-123")
 
 ### Hours Tracking Widget
 - Displays current week hours vs. target (e.g., "32/40 hours")
