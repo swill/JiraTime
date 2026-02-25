@@ -34,14 +34,15 @@ type Issue struct {
 
 // CalendarEvent represents a worklog as a calendar event
 type CalendarEvent struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Start       time.Time `json:"start"`
-	End         time.Time `json:"end"`
-	IssueKey    string    `json:"issue_key"`
-	IssueID     string    `json:"issue_id"`
-	WorklogID   string    `json:"worklog_id"`
-	Description string    `json:"description,omitempty"`
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	Start         time.Time `json:"start"`
+	End           time.Time `json:"end"`
+	IssueKey      string    `json:"issue_key"`
+	IssueID       string    `json:"issue_id"`
+	WorklogID     string    `json:"worklog_id"`
+	Description   string    `json:"description,omitempty"`
+	FromJiraTime  bool      `json:"from_jiratime"`
 }
 
 // CreateEventReq is the request body for creating a worklog

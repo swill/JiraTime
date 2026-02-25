@@ -264,15 +264,19 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 				}
 			}
 
+			// Check if worklog was created by JiraTime
+			fromJiraTime := c.IsWorklogFromJiraTime(ctx, issue.Key, wl.ID)
+
 			events = append(events, CalendarEvent{
-				ID:          fmt.Sprintf("%s-%s", issue.Key, wl.ID),
-				Title:       fmt.Sprintf("[%s] %s", issue.Key, issue.Fields.Summary),
-				Start:       startTime,
-				End:         startTime.Add(time.Duration(wl.TimeSpentSeconds) * time.Second),
-				IssueKey:    issue.Key,
-				IssueID:     issue.ID,
-				WorklogID:   wl.ID,
-				Description: description,
+				ID:           fmt.Sprintf("%s-%s", issue.Key, wl.ID),
+				Title:        fmt.Sprintf("[%s] %s", issue.Key, issue.Fields.Summary),
+				Start:        startTime,
+				End:          startTime.Add(time.Duration(wl.TimeSpentSeconds) * time.Second),
+				IssueKey:     issue.Key,
+				IssueID:      issue.ID,
+				WorklogID:    wl.ID,
+				Description:  description,
+				FromJiraTime: fromJiraTime,
 			})
 		}
 	}
@@ -527,6 +531,20 @@ func (c *JiraClient) GetWorklogProperty(ctx context.Context, issueKey, worklogID
 	}
 
 	return &result.Value, nil
+}
+
+// IsWorklogFromJiraTime checks if a worklog was created by JiraTime
+func (c *JiraClient) IsWorklogFromJiraTime(ctx context.Context, issueKey, worklogID string) bool {
+	endpoint := fmt.Sprintf("/issue/%s/worklog/%s/properties/jiratime.source", issueKey, worklogID)
+
+	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	// If property exists, it's from JiraTime
+	return resp.StatusCode == http.StatusOK
 }
 
 // DeleteWorklogProperty removes a property from a worklog

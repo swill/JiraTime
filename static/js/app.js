@@ -136,11 +136,13 @@
                 title: e.title,
                 start: e.start,
                 end: e.end,
+                classNames: e.from_jiratime ? ['from-jiratime'] : ['from-external'],
                 extendedProps: {
                     issueKey: e.issue_key,
                     issueId: e.issue_id,
                     worklogId: e.worklog_id,
-                    description: e.description
+                    description: e.description,
+                    fromJiraTime: e.from_jiratime
                 }
             }));
 

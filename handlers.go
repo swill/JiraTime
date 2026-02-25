@@ -73,6 +73,12 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mark this worklog as created by JiraTime
+	if err := client.SetWorklogProperty(r.Context(), req.IssueKey, worklog.ID, worklogSourcePropertyKey, WorklogSource{CreatedBy: "jiratime"}); err != nil {
+		logrus.Warnf("Failed to set worklog source property: %v", err)
+		// Don't fail - worklog was created successfully
+	}
+
 	// Handle custom field contributions if any selections provided
 	if len(req.CustomFieldSelections) > 0 {
 		if err := updateCustomFieldsForWorklog(r.Context(), client, req.IssueKey, worklog.ID, req.DurationMin, req.CustomFieldSelections, nil); err != nil {
@@ -83,13 +89,14 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 
 	// Return the created event
 	event := CalendarEvent{
-		ID:          req.IssueKey + "-" + worklog.ID,
-		Title:       "[" + req.IssueKey + "]",
-		Start:       start,
-		End:         start.Add(time.Duration(durationSeconds) * time.Second),
-		IssueKey:    req.IssueKey,
-		WorklogID:   worklog.ID,
-		Description: req.Description,
+		ID:           req.IssueKey + "-" + worklog.ID,
+		Title:        "[" + req.IssueKey + "]",
+		Start:        start,
+		End:          start.Add(time.Duration(durationSeconds) * time.Second),
+		IssueKey:     req.IssueKey,
+		WorklogID:    worklog.ID,
+		Description:  req.Description,
+		FromJiraTime: true,
 	}
 
 	w.WriteHeader(http.StatusCreated)
@@ -350,8 +357,14 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 	}
 }
 
-// Worklog property key for custom field contributions
+// Worklog property keys
 const worklogPropertyKey = "jiratime.customFieldContributions"
+const worklogSourcePropertyKey = "jiratime.source"
+
+// WorklogSource indicates the worklog was created by JiraTime
+type WorklogSource struct {
+	CreatedBy string `json:"created_by"`
+}
 
 // handleGetIssueCustomFields returns available custom fields and their current values for an issue
 func handleGetIssueCustomFields(w http.ResponseWriter, r *http.Request) {

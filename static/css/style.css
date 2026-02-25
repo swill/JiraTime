@@ -360,6 +360,16 @@ body {
     cursor: pointer;
 }
 
+/* JiraTime-created events - solid left border */
+.fc-event.from-jiratime {
+    border-left: 5px solid #b5cdf2;
+}
+
+/* External events (created in Jira/JSM) - dashed left border */
+.fc-event.from-external {
+    border-left: 5px dashed #b5cdf2;
+}
+
 .fc-event-title {
     font-size: 12px;
     overflow: hidden;
