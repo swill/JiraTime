@@ -14,6 +14,7 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
 - **Search**: Filter sidebar issues and search all Jira issues
 - **Custom Field Tracking**: Track time in custom numeric fields (e.g., Billable Time) with automatic totals
 - **Source Tracking**: Visual indicator distinguishes JiraTime entries from those created in Jira/JSM
+- **Manager Impersonation**: Super users can view team members' calendars in read-only mode
 - **Recent Issues**: Quick access to your 5 most recently used issues
 - **External Links**: Click the link icon on any issue to open it in Jira
 - **Mobile Responsive**: Collapsible sidebar, day view, and tap-to-create workflow
@@ -253,6 +254,25 @@ Calendar events show a visual indicator to distinguish their origin:
 
 This helps identify which entries were logged through JiraTime vs. native Jira interfaces.
 
+### Manager Impersonation
+
+Super users (managers) can view team members' calendars in read-only mode to review time entries without logging in as that user.
+
+**Setup:**
+1. Add account IDs to the `SUPER_USERS` list in `config.toml`:
+   ```toml
+   SUPER_USERS = ["5a1234567890abcdef123456", "5b1234567890abcdef123456"]
+   ```
+2. To find your account ID, check the `/api/user` endpoint while logged in
+
+**Usage:**
+1. Super users see a "Search users to impersonate..." field below their name
+2. Search for a team member by name
+3. Click their name to view their calendar
+4. A yellow banner shows "Viewing as: [Name]" with a Stop button
+5. All modifications (create, edit, delete) are blocked while impersonating
+6. Click "Stop" to return to your own calendar
+
 ### Hours Widget
 
 The hours widget shows your logged hours for the current week:
@@ -273,6 +293,7 @@ Configure your weekly target in `config.toml` with `HOURS_TARGET`.
 | `HOURS_TARGET` | No | 40 | Weekly hours target for the widget |
 | `ACTIVE_ISSUES_WEEKS` | No | 4 | Weeks of activity for Active Issues filter |
 | `DONE_ISSUES_WEEKS` | No | 2 | Weeks that Done issues remain visible |
+| `SUPER_USERS` | No | [] | List of account IDs that can impersonate other users |
 
 Environment variables can override config file values (e.g., `JIRA_CLIENT_ID=xxx ./jiratime`).
 
@@ -341,6 +362,9 @@ jiratime/
 | GET | `/api/hours?week=X` | Get weekly hours summary |
 | POST | `/api/refresh` | Force cache refresh |
 | GET | `/api/user` | Get current user info |
+| GET | `/api/users/search?q=X` | Search users (super users only) |
+| POST | `/api/impersonate` | Start impersonating a user (super users only) |
+| POST | `/api/impersonate/stop` | Stop impersonating |
 
 ## Troubleshooting
 

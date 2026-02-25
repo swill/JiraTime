@@ -17,6 +17,17 @@ func GetCustomTimeFields() []CustomTimeField {
 	return defaultCustomTimeFields
 }
 
+// IsSuperUser checks if the given account ID is configured as a super user
+func IsSuperUser(accountID string) bool {
+	superUsers := viper.GetStringSlice("SUPER_USERS")
+	for _, su := range superUsers {
+		if su == accountID {
+			return true
+		}
+	}
+	return false
+}
+
 func initConfig() {
 	viper.SetConfigName("config")
 	viper.SetConfigType("toml")

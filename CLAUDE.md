@@ -43,6 +43,7 @@ make deploy   # Deploy to remote server (requires __config.sh)
   - `HOURS_TARGET`: Weekly hours target for widget (default: 40)
   - `ACTIVE_ISSUES_WEEKS`: Activity window for Active Issues (default: 4)
   - `DONE_ISSUES_WEEKS`: How long Done issues stay visible (default: 2)
+  - `SUPER_USERS`: List of account IDs that can impersonate other users (default: [])
 
 ### Code Style Reference
 The `../fitops` and `../timework` projects demonstrate preferred patterns:
@@ -128,6 +129,18 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - Calendar displays visual indicator: solid left border (JiraTime) vs dashed left border (external)
 - Source is checked via worklog properties API when fetching events
 - `CalendarEvent.FromJiraTime` boolean field indicates the source
+
+### Manager Impersonation
+- Super users (defined in `SUPER_USERS` config) can view other users' calendars
+- View-only mode: all create/update/delete operations are blocked
+- Impersonation state stored in session (`ImpersonatingID`, `ImpersonatingName`)
+- JQL queries use the impersonated user's account ID instead of `currentUser()`
+- API endpoints:
+  - `GET /api/users/search?q=X` - Search users (super users only)
+  - `POST /api/impersonate` - Start impersonating `{account_id, display_name}`
+  - `POST /api/impersonate/stop` - Stop impersonating
+- Frontend shows yellow banner with "Viewing as: [Name]" and Stop button
+- `is_super_user` flag returned in `/api/user` response
 
 ## Design Decisions
 

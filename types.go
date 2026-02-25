@@ -15,6 +15,9 @@ type UserSession struct {
 	Email       string        `json:"email"`
 	AvatarURL   string        `json:"avatar_url"`
 	Token       *oauth2.Token `json:"token"`
+	// Impersonation fields
+	ImpersonatingID   string `json:"impersonating_id,omitempty"`
+	ImpersonatingName string `json:"impersonating_name,omitempty"`
 }
 
 // Project represents a Jira project

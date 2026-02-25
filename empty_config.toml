@@ -33,3 +33,7 @@ HOURS_TARGET = 40
 ACTIVE_ISSUES_WEEKS = 4
 # How many weeks Done issues stay visible (for logging time on recently completed work)
 DONE_ISSUES_WEEKS = 2
+
+# Super users - account IDs that can impersonate other users (view-only mode)
+# Find your account ID by checking /api/user while logged in
+# SUPER_USERS = ["5a1234567890abcdef123456", "5b1234567890abcdef123456"]

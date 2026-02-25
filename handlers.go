@@ -11,6 +11,20 @@ import (
 	"github.com/spf13/viper"
 )
 
+// getEffectiveAccountID returns the impersonated account ID if impersonation is active,
+// otherwise returns the session's own account ID
+func getEffectiveAccountID(session *UserSession) string {
+	if session.ImpersonatingID != "" {
+		return session.ImpersonatingID
+	}
+	return session.AccountID
+}
+
+// isImpersonating returns true if the session is currently impersonating another user
+func isImpersonating(session *UserSession) bool {
+	return session.ImpersonatingID != ""
+}
+
 func handleGetEvents(w http.ResponseWriter, r *http.Request) {
 	session := getSessionFromRequest(r)
 	if session == nil {
@@ -34,7 +48,8 @@ func handleGetEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := NewJiraClient(session.Token, session.CloudID)
-	events, err := client.GetMyWorklogsForPeriod(r.Context(), start, end, session.AccountID)
+	effectiveAccountID := getEffectiveAccountID(session)
+	events, err := client.GetMyWorklogsForPeriod(r.Context(), start, end, effectiveAccountID)
 	if err != nil {
 		logrus.Errorf("Failed to get worklogs: %v", err)
 		http.Error(w, "Failed to get events", http.StatusInternalServerError)
@@ -48,6 +63,12 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	session := getSessionFromRequest(r)
 	if session == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Block modifications when impersonating (view-only mode)
+	if isImpersonating(session) {
+		http.Error(w, "Cannot create events while impersonating another user", http.StatusForbidden)
 		return
 	}
 
@@ -107,6 +128,12 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 	session := getSessionFromRequest(r)
 	if session == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Block modifications when impersonating (view-only mode)
+	if isImpersonating(session) {
+		http.Error(w, "Cannot update events while impersonating another user", http.StatusForbidden)
 		return
 	}
 
@@ -185,6 +212,12 @@ func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block modifications when impersonating (view-only mode)
+	if isImpersonating(session) {
+		http.Error(w, "Cannot delete events while impersonating another user", http.StatusForbidden)
+		return
+	}
+
 	// Extract event ID from URL path: /api/events/{id}
 	eventID := strings.TrimPrefix(r.URL.Path, "/api/events/")
 	if eventID == "" {
@@ -225,20 +258,22 @@ func handleGetIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check cache first
-	if issues, ok := cache.GetIssues(session.AccountID); ok {
+	effectiveAccountID := getEffectiveAccountID(session)
+
+	// Check cache first (using effective account ID for impersonation support)
+	if issues, ok := cache.GetIssues(effectiveAccountID); ok {
 		writeJSON(w, issues)
 		return
 	}
 
 	client := NewJiraClient(session.Token, session.CloudID)
-	issues, err := client.GetMyIssues(r.Context())
+	issues, err := client.GetMyIssues(r.Context(), effectiveAccountID)
 	if err != nil {
 		logrus.Errorf("Failed to get issues: %v", err)
 		http.Error(w, "Failed to get issues", http.StatusInternalServerError)
 		return
 	}
-	cache.SetIssues(session.AccountID, issues)
+	cache.SetIssues(effectiveAccountID, issues)
 	writeJSON(w, issues)
 }
 
@@ -272,7 +307,8 @@ func handleGetHours(w http.ResponseWriter, r *http.Request) {
 	weekEnd := weekStart.AddDate(0, 0, 7)
 
 	client := NewJiraClient(session.Token, session.CloudID)
-	events, err := client.GetMyWorklogsForPeriod(r.Context(), weekStart, weekEnd, session.AccountID)
+	effectiveAccountID := getEffectiveAccountID(session)
+	events, err := client.GetMyWorklogsForPeriod(r.Context(), weekStart, weekEnd, effectiveAccountID)
 	if err != nil {
 		logrus.Errorf("Failed to get worklogs for hours: %v", err)
 		http.Error(w, "Failed to get hours", http.StatusInternalServerError)
@@ -341,13 +377,123 @@ func handleGetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, map[string]interface{}{
+	response := map[string]interface{}{
 		"account_id":   session.AccountID,
 		"display_name": session.DisplayName,
 		"email":        session.Email,
 		"avatar_url":   session.AvatarURL,
 		"site_url":     session.SiteURL,
-	})
+		"is_super_user": IsSuperUser(session.AccountID),
+	}
+
+	// Include impersonation info if active
+	if session.ImpersonatingID != "" {
+		response["impersonating_id"] = session.ImpersonatingID
+		response["impersonating_name"] = session.ImpersonatingName
+	}
+
+	writeJSON(w, response)
+}
+
+func handleSearchUsers(w http.ResponseWriter, r *http.Request) {
+	session := getSessionFromRequest(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Only super users can search for users to impersonate
+	if !IsSuperUser(session.AccountID) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	query := r.URL.Query().Get("q")
+	if query == "" || len(query) < 2 {
+		writeJSON(w, []JiraUser{})
+		return
+	}
+
+	client := NewJiraClient(session.Token, session.CloudID)
+	users, err := client.SearchUsers(r.Context(), query)
+	if err != nil {
+		logrus.Errorf("Failed to search users: %v", err)
+		http.Error(w, "Failed to search users", http.StatusInternalServerError)
+		return
+	}
+
+	// Return simplified user info
+	type UserInfo struct {
+		AccountID   string `json:"account_id"`
+		DisplayName string `json:"display_name"`
+		AvatarURL   string `json:"avatar_url"`
+	}
+
+	result := make([]UserInfo, len(users))
+	for i, u := range users {
+		result[i] = UserInfo{
+			AccountID:   u.AccountID,
+			DisplayName: u.DisplayName,
+			AvatarURL:   u.AvatarURLs.Large,
+		}
+	}
+
+	writeJSON(w, result)
+}
+
+func handleImpersonate(w http.ResponseWriter, r *http.Request) {
+	session := getSessionFromRequest(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Only super users can impersonate
+	if !IsSuperUser(session.AccountID) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	var req struct {
+		AccountID   string `json:"account_id"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.AccountID == "" {
+		http.Error(w, "account_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Update session with impersonation info
+	session.ImpersonatingID = req.AccountID
+	session.ImpersonatingName = req.DisplayName
+	saveSession(session)
+
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func handleStopImpersonate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	session := getSessionFromRequest(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Clear impersonation
+	session.ImpersonatingID = ""
+	session.ImpersonatingName = ""
+	saveSession(session)
+
+	writeJSON(w, map[string]string{"status": "ok"})
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {

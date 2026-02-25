@@ -13,6 +13,14 @@
             <div class="sidebar-header">
                 <h1>JiraTime</h1>
                 <div class="user-info" id="userInfo"></div>
+                <div class="impersonation-bar hidden" id="impersonationBar">
+                    <span class="viewing-as">Viewing as: <strong id="impersonatingName"></strong></span>
+                    <button id="stopImpersonateBtn" class="btn btn-small btn-danger">Stop</button>
+                </div>
+                <div class="impersonate-controls hidden" id="impersonateControls">
+                    <input type="text" id="impersonateSearch" placeholder="Search users to impersonate..." autocomplete="off">
+                    <div class="impersonate-results hidden" id="impersonateResults"></div>
+                </div>
             </div>
 
             <div class="search-container">

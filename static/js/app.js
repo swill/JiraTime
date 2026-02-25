@@ -8,6 +8,7 @@
     const initializedDraggables = new WeakSet();
     let selectedIssue = null; // For mobile tap-to-create
     let jiraSiteURL = ''; // Base URL for Jira site
+    let currentUser = null; // Current user info including impersonation state
 
     // Loading state management
     let apiLoadingCount = 0;
@@ -287,6 +288,10 @@
 
     // API Functions
     async function createEvent(issueKey, start, durationMin, description) {
+        if (isViewOnlyMode()) {
+            alert('Cannot create events while viewing another user\'s calendar');
+            return;
+        }
         showLoading();
         try {
             const response = await fetch('/api/events', {
@@ -317,6 +322,11 @@
     }
 
     async function updateEvent(event, revertFn) {
+        if (isViewOnlyMode()) {
+            if (revertFn) revertFn();
+            alert('Cannot update events while viewing another user\'s calendar');
+            return;
+        }
         showLoading();
         try {
             const eventId = `${event.extendedProps.issueKey}-${event.extendedProps.worklogId}`;
@@ -348,6 +358,10 @@
     }
 
     async function deleteEvent(eventId) {
+        if (isViewOnlyMode()) {
+            alert('Cannot delete events while viewing another user\'s calendar');
+            return;
+        }
         showLoading();
         try {
             const response = await fetch(`/api/events/${encodeURIComponent(eventId)}`, {
@@ -465,6 +479,7 @@
         const dialog = document.getElementById('editDialog');
         const title = document.getElementById('dialogTitle');
         const deleteBtn = document.getElementById('deleteBtn');
+        const saveBtn = dialog.querySelector('button[type="submit"]');
 
         // Track the event being edited so we can unselect it on close
         currentEditingEvent = event;
@@ -477,8 +492,9 @@
         document.getElementById('eventDuration').value = getDurationMinutes(event);
         document.getElementById('eventDescription').value = event.extendedProps.description || '';
 
-        title.textContent = 'Edit Time Entry';
-        deleteBtn.style.display = 'inline-block';
+        title.textContent = isViewOnlyMode() ? 'View Time Entry' : 'Edit Time Entry';
+        deleteBtn.style.display = isViewOnlyMode() ? 'none' : 'inline-block';
+        saveBtn.style.display = isViewOnlyMode() ? 'none' : 'inline-block';
 
         // Reset custom fields state
         currentCustomFields = [];
@@ -586,17 +602,175 @@
         try {
             const response = await fetch('/api/user');
             if (response.ok) {
-                const user = await response.json();
-                jiraSiteURL = user.site_url || '';
+                currentUser = await response.json();
+                jiraSiteURL = currentUser.site_url || '';
                 const userInfo = document.getElementById('userInfo');
                 userInfo.innerHTML = `
-                    <img src="${user.avatar_url}" alt="" class="user-avatar">
-                    <span class="user-name">${user.display_name}</span>
+                    <img src="${currentUser.avatar_url}" alt="" class="user-avatar">
+                    <span class="user-name">${currentUser.display_name}</span>
                 `;
+
+                // Setup impersonation UI based on user permissions
+                setupImpersonationUI();
             }
         } catch (error) {
             console.error('Error loading user info:', error);
         }
+    }
+
+    function setupImpersonationUI() {
+        const impersonateControls = document.getElementById('impersonateControls');
+        const impersonationBar = document.getElementById('impersonationBar');
+        const impersonatingName = document.getElementById('impersonatingName');
+        const container = document.querySelector('.app-container');
+
+        // Check if currently impersonating
+        if (currentUser.impersonating_id) {
+            impersonationBar.classList.remove('hidden');
+            impersonatingName.textContent = currentUser.impersonating_name;
+            container.classList.add('view-only-mode');
+
+            // Hide impersonate search when impersonating
+            impersonateControls.classList.add('hidden');
+        } else {
+            impersonationBar.classList.add('hidden');
+            container.classList.remove('view-only-mode');
+
+            // Show impersonate controls for super users only
+            if (currentUser.is_super_user) {
+                impersonateControls.classList.remove('hidden');
+                initImpersonationSearch();
+            } else {
+                impersonateControls.classList.add('hidden');
+            }
+        }
+
+        // Setup stop impersonation button
+        const stopBtn = document.getElementById('stopImpersonateBtn');
+        stopBtn.addEventListener('click', stopImpersonation);
+    }
+
+    let impersonateSearchTimeout = null;
+
+    function initImpersonationSearch() {
+        const searchInput = document.getElementById('impersonateSearch');
+        const resultsContainer = document.getElementById('impersonateResults');
+
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+
+            if (impersonateSearchTimeout) {
+                clearTimeout(impersonateSearchTimeout);
+            }
+
+            if (query.length < 2) {
+                resultsContainer.classList.add('hidden');
+                return;
+            }
+
+            impersonateSearchTimeout = setTimeout(async () => {
+                try {
+                    const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`);
+                    if (response.ok) {
+                        const users = await response.json();
+                        renderImpersonateResults(users);
+                    }
+                } catch (error) {
+                    console.error('Error searching users:', error);
+                }
+            }, 300);
+        });
+
+        // Close results when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!searchInput.contains(e.target) && !resultsContainer.contains(e.target)) {
+                resultsContainer.classList.add('hidden');
+            }
+        });
+    }
+
+    function renderImpersonateResults(users) {
+        const container = document.getElementById('impersonateResults');
+        container.innerHTML = '';
+
+        if (users.length === 0) {
+            container.classList.add('hidden');
+            return;
+        }
+
+        users.forEach(user => {
+            const item = document.createElement('div');
+            item.className = 'impersonate-user-item';
+            item.innerHTML = `
+                <img src="${user.avatar_url}" alt="">
+                <span>${user.display_name}</span>
+            `;
+            item.addEventListener('click', () => startImpersonation(user));
+            container.appendChild(item);
+        });
+
+        container.classList.remove('hidden');
+    }
+
+    async function startImpersonation(user) {
+        showLoading();
+        try {
+            const response = await fetch('/api/impersonate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    account_id: user.account_id,
+                    display_name: user.display_name
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to start impersonation');
+            }
+
+            // Clear search and results
+            document.getElementById('impersonateSearch').value = '';
+            document.getElementById('impersonateResults').classList.add('hidden');
+
+            // Reload user info and data
+            await loadUserInfo();
+            await loadIssues();
+            calendar.refetchEvents();
+            updateHoursWidget();
+        } catch (error) {
+            console.error('Error starting impersonation:', error);
+            alert('Failed to start impersonation');
+        } finally {
+            hideLoading();
+        }
+    }
+
+    async function stopImpersonation() {
+        showLoading();
+        try {
+            const response = await fetch('/api/impersonate/stop', {
+                method: 'POST'
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to stop impersonation');
+            }
+
+            // Reload user info and data
+            await loadUserInfo();
+            await loadIssues();
+            calendar.refetchEvents();
+            updateHoursWidget();
+        } catch (error) {
+            console.error('Error stopping impersonation:', error);
+            alert('Failed to stop impersonation');
+        } finally {
+            hideLoading();
+        }
+    }
+
+    function isViewOnlyMode() {
+        return currentUser && currentUser.impersonating_id;
     }
 
     async function loadIssues() {

@@ -57,6 +57,28 @@ func (c *JiraClient) doRequest(ctx context.Context, method, endpoint string, bod
 	return c.client.Do(req)
 }
 
+// SearchUsers searches for users by query string
+func (c *JiraClient) SearchUsers(ctx context.Context, query string) ([]JiraUser, error) {
+	endpoint := fmt.Sprintf("/user/search?query=%s&maxResults=20", query)
+	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("search users failed: %d %s", resp.StatusCode, body)
+	}
+
+	var users []JiraUser
+	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+		return nil, err
+	}
+
+	return users, nil
+}
+
 func (c *JiraClient) GetCurrentUser(ctx context.Context) (*JiraUser, error) {
 	resp, err := c.doRequest(ctx, "GET", "/myself", nil)
 	if err != nil {
@@ -77,14 +99,15 @@ func (c *JiraClient) GetCurrentUser(ctx context.Context) (*JiraUser, error) {
 	return &user, nil
 }
 
-func (c *JiraClient) GetMyIssues(ctx context.Context) ([]IssuesByProject, error) {
+func (c *JiraClient) GetMyIssues(ctx context.Context, accountID string) ([]IssuesByProject, error) {
 	// JQL to get "active" issues: assigned to user, created by user, or user has logged time
 	// Limited to issues with recent activity to avoid showing stale tickets
 	// Include Done issues for configurable period so users can still log time on recently completed work
 	activeWeeks := viper.GetInt("ACTIVE_ISSUES_WEEKS")
 	doneWeeks := viper.GetInt("DONE_ISSUES_WEEKS")
 
-	jql := fmt.Sprintf("(assignee = currentUser() OR reporter = currentUser() OR worklogAuthor = currentUser()) AND updated >= -%dw AND (statusCategory != Done OR (statusCategory = Done AND statusCategoryChangedDate >= -%dw)) ORDER BY updated DESC", activeWeeks, doneWeeks)
+	// Use accountID directly instead of currentUser() to support impersonation
+	jql := fmt.Sprintf("(assignee = \"%s\" OR reporter = \"%s\" OR worklogAuthor = \"%s\") AND updated >= -%dw AND (statusCategory != Done OR (statusCategory = Done AND statusCategoryChangedDate >= -%dw)) ORDER BY updated DESC", accountID, accountID, accountID, activeWeeks, doneWeeks)
 
 	searchReq := map[string]interface{}{
 		"jql":        jql,
@@ -204,11 +227,12 @@ func (c *JiraClient) GetWorklogs(ctx context.Context, issueKey string) ([]JiraWo
 }
 
 func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time.Time, accountID string) ([]CalendarEvent, error) {
-	// Search for issues with worklogs in the date range by the current user
+	// Search for issues with worklogs in the date range by the specified user
 	startStr := start.Format("2006-01-02")
 	endStr := end.Format("2006-01-02")
 
-	jql := fmt.Sprintf("worklogDate >= %s AND worklogDate <= %s AND worklogAuthor = currentUser()", startStr, endStr)
+	// Use accountID directly instead of currentUser() to support impersonation
+	jql := fmt.Sprintf("worklogDate >= %s AND worklogDate <= %s AND worklogAuthor = \"%s\"", startStr, endStr, accountID)
 
 	searchReq := map[string]interface{}{
 		"jql":        jql,

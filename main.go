@@ -35,6 +35,9 @@ func main() {
 	mux.HandleFunc("/api/hours", requireAuth(handleGetHours))
 	mux.HandleFunc("/api/refresh", requireAuth(handleRefresh))
 	mux.HandleFunc("/api/user", requireAuth(handleGetUser))
+	mux.HandleFunc("/api/users/search", requireAuth(handleSearchUsers))
+	mux.HandleFunc("/api/impersonate", requireAuth(handleImpersonateRoute))
+	mux.HandleFunc("/api/impersonate/stop", requireAuth(handleStopImpersonate))
 
 	// Static files and main page
 	staticFS, _ := fs.Sub(staticFiles, "static")
@@ -132,6 +135,14 @@ func handleEventByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func handleImpersonateRoute(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		handleImpersonate(w, r)
+		return
+	}
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func handleIssueByKey(w http.ResponseWriter, r *http.Request) {

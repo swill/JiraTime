@@ -516,3 +516,8 @@ func tryRestoreSession(accountID, sessionID string) *UserSession {
 	logrus.Infof("Restored session for account %s", accountID)
 	return session
 }
+
+// saveSession persists the session data to disk (the in-memory map is already updated via pointer)
+func saveSession(session *UserSession) {
+	saveSessionData(session.AccountID, session)
+}
