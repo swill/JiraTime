@@ -13,6 +13,7 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
 - **Hours Tracking**: Visual widget showing weekly hours vs. target
 - **Search**: Filter sidebar issues and search all Jira issues
 - **Custom Field Tracking**: Track time in custom numeric fields (e.g., Billable Time) with automatic totals
+- **Source Tracking**: Visual indicator distinguishes JiraTime entries from those created in Jira/JSM
 - **Recent Issues**: Quick access to your 5 most recently used issues
 - **External Links**: Click the link icon on any issue to open it in Jira
 - **Mobile Responsive**: Collapsible sidebar, day view, and tap-to-create workflow
@@ -240,7 +241,15 @@ JiraTime can track worklog time in custom numeric fields on Jira issues. This is
 **Notes:**
 - Custom fields must already exist on the Jira issue to appear as options
 - Contributions are tracked per-worklog using Jira's worklog properties API
-- If a worklog's duration changes, the delta is applied to checked custom fields
+- If a worklog's duration changes (including via drag-resize), the delta is automatically applied to checked custom fields
+
+### Source Tracking
+
+Calendar events show a visual indicator to distinguish their origin:
+- **Solid left border**: Created via JiraTime
+- **Dashed left border**: Created externally (Jira, JSM, or other tools)
+
+This helps identify which entries were logged through JiraTime vs. native Jira interfaces.
 
 ### Hours Widget
 

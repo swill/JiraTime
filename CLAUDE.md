@@ -119,7 +119,14 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - If the checkbox was checked and is unchecked, then the duration of the worklog should be removed from the value of the appropriate custom field
 - If the checkbox was checked and the worklog is deleted, then the duration of the worklog should be removed from the value of the appropriate custom field
 - If the checkbox is checked and the worklog duration changes, the change in duration should be reflected in the value of the custom field (example: If the duration changes from 90 to 60 minutes, then 30 minutes is removed from the custom field, etc)
+- Drag-resize operations automatically adjust custom field contributions without needing to open the edit dialog
 - The "checked" status of the appropriate custom field checkbox and the duration value contributed to the custom field value should be tracked in the work log properties (API: `/rest/api/3/issue/{issueIdOrKey}/worklog/{worklogId}/properties/{propertyKey}`)
+
+### Worklog Source Tracking
+- Worklogs created via JiraTime are marked with a `jiratime.source` property
+- Calendar displays visual indicator: solid left border (JiraTime) vs dashed left border (external)
+- Source is checked via worklog properties API when fetching events
+- `CalendarEvent.FromJiraTime` boolean field indicates the source
 
 ## Design Decisions
 
