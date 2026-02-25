@@ -428,16 +428,26 @@ func (c *JiraClient) GetIssueCustomFields(ctx context.Context, issueKey string, 
 	}
 
 	// Extract numeric values from custom fields
+	// A field is considered "available" if it exists in the response (even if null)
 	values := make(map[string]int)
 	for _, fieldID := range fieldIDs {
-		if val, ok := result.Fields[fieldID]; ok && val != nil {
-			switch v := val.(type) {
-			case float64:
-				values[fieldID] = int(v)
-			case int:
-				values[fieldID] = v
+		if val, ok := result.Fields[fieldID]; ok {
+			// Field exists on this issue
+			if val == nil {
+				values[fieldID] = 0
+			} else {
+				switch v := val.(type) {
+				case float64:
+					values[fieldID] = int(v)
+				case int:
+					values[fieldID] = v
+				default:
+					// Field exists but has unexpected type, treat as 0
+					values[fieldID] = 0
+				}
 			}
 		}
+		// If field key doesn't exist in response, it's not available on this issue
 	}
 
 	return values, nil

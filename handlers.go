@@ -135,14 +135,11 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 
 	client := NewJiraClient(session.Token, session.CloudID)
 
-	// Get previous contributions before update (only if custom field selections provided)
-	var previousContributions *CustomFieldContributions
-	if req.CustomFieldSelections != nil {
-		previousContributions, err = client.GetWorklogProperty(r.Context(), issueKey, worklogID, worklogPropertyKey)
-		if err != nil {
-			logrus.Warnf("Failed to get previous contributions: %v", err)
-			previousContributions = &CustomFieldContributions{Contributions: make(map[string]int)}
-		}
+	// Always get previous contributions - needed for both explicit selections and drag-resize
+	previousContributions, err := client.GetWorklogProperty(r.Context(), issueKey, worklogID, worklogPropertyKey)
+	if err != nil {
+		logrus.Warnf("Failed to get previous contributions: %v", err)
+		previousContributions = &CustomFieldContributions{Contributions: make(map[string]int)}
 	}
 
 	_, err = client.UpdateWorklog(r.Context(), issueKey, worklogID, start, durationSeconds, req.Description)
@@ -152,9 +149,19 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle custom field contributions if selections provided
-	if req.CustomFieldSelections != nil {
-		if err := updateCustomFieldsForWorklog(r.Context(), client, issueKey, worklogID, req.DurationMin, req.CustomFieldSelections, previousContributions); err != nil {
+	// Handle custom field contributions
+	// If selections provided, use them; otherwise preserve existing contributions with new duration
+	selections := req.CustomFieldSelections
+	if selections == nil && len(previousContributions.Contributions) > 0 {
+		// Drag-resize case: rebuild selections from existing contributions
+		selections = make(map[string]bool)
+		for fieldID := range previousContributions.Contributions {
+			selections[fieldID] = true
+		}
+	}
+
+	if selections != nil {
+		if err := updateCustomFieldsForWorklog(r.Context(), client, issueKey, worklogID, req.DurationMin, selections, previousContributions); err != nil {
 			logrus.Errorf("Failed to update custom fields: %v", err)
 			// Don't fail the request - worklog was updated successfully
 		}
