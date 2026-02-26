@@ -142,6 +142,15 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - Frontend shows yellow banner with "Viewing as: [Name]" and Stop button
 - `is_super_user` flag returned in `/api/user` response
 
+### Time Range Settings
+- Configurable visible time range for calendar (supports different shifts/timezones)
+- Presets: Day (6am-10pm), Early (4am-2pm), Late (2pm-12am), Night (8pm-8am), Full Day
+- Custom option allows arbitrary start/end times
+- Overnight ranges supported (when end < start, end is extended past 24:00 for FullCalendar)
+- Stored in localStorage (`timeRangeSettings` key)
+- Applied dynamically via `calendar.setOption()` without page reload
+- Gear icon (⚙) in sidebar footer opens settings dialog
+
 ## Design Decisions
 
 - **Single Jira instance** - no multi-tenant support required

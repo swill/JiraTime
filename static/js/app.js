@@ -10,6 +10,73 @@
     let jiraSiteURL = ''; // Base URL for Jira site
     let currentUser = null; // Current user info including impersonation state
 
+    // Time range presets (start, end in HH:MM format)
+    const TIME_RANGE_PRESETS = {
+        'default': { start: '06:00', end: '22:00', label: 'Day Shift (6am - 10pm)' },
+        'early':   { start: '04:00', end: '14:00', label: 'Early Shift (4am - 2pm)' },
+        'late':    { start: '14:00', end: '24:00', label: 'Late Shift (2pm - 12am)' },
+        'night':   { start: '20:00', end: '08:00', label: 'Night Shift (8pm - 8am)' },
+        'full':    { start: '00:00', end: '24:00', label: 'Full Day (12am - 12am)' }
+    };
+
+    // Get stored time range settings from localStorage
+    function getTimeRangeSettings() {
+        const stored = localStorage.getItem('timeRangeSettings');
+        if (stored) {
+            try {
+                return JSON.parse(stored);
+            } catch (e) {
+                console.error('Error parsing time range settings:', e);
+            }
+        }
+        return { preset: 'default', customStart: '06:00', customEnd: '22:00' };
+    }
+
+    // Save time range settings to localStorage
+    function saveTimeRangeSettings(settings) {
+        localStorage.setItem('timeRangeSettings', JSON.stringify(settings));
+    }
+
+    // Convert time range settings to FullCalendar format
+    // Handles overnight ranges by extending end time past 24:00
+    function getCalendarTimeRange() {
+        const settings = getTimeRangeSettings();
+        let start, end;
+
+        if (settings.preset === 'custom') {
+            start = settings.customStart;
+            end = settings.customEnd;
+        } else {
+            const preset = TIME_RANGE_PRESETS[settings.preset] || TIME_RANGE_PRESETS['default'];
+            start = preset.start;
+            end = preset.end;
+        }
+
+        // Convert to FullCalendar format (HH:MM:SS)
+        const startTime = start + ':00';
+        let endTime = end + ':00';
+
+        // Handle overnight ranges: if end time is less than or equal to start time,
+        // it's an overnight range - add 24 hours to end time
+        const startMinutes = timeToMinutes(start);
+        const endMinutes = timeToMinutes(end);
+
+        if (endMinutes <= startMinutes && end !== '24:00') {
+            // Convert to extended time (e.g., 08:00 becomes 32:00 for 8am next day)
+            const extendedHours = parseInt(end.split(':')[0], 10) + 24;
+            const mins = end.split(':')[1];
+            endTime = String(extendedHours).padStart(2, '0') + ':' + mins + ':00';
+        }
+
+        return { slotMinTime: startTime, slotMaxTime: endTime };
+    }
+
+    // Helper to convert HH:MM to minutes since midnight
+    function timeToMinutes(time) {
+        const [hours, mins] = time.split(':').map(Number);
+        return hours * 60 + mins;
+    }
+
     // Loading state management
     let apiLoadingCount = 0;
     let calendarLoading = false;
@@ -53,6 +120,7 @@
             initSidebar();
             initSearch();
             initDialog();
+            initSettings();
             updateHoursWidget();
             checkMobileView();
             window.addEventListener('resize', checkMobileView);
@@ -64,6 +132,7 @@
     // Calendar Setup
     function initCalendar() {
         const calendarEl = document.getElementById('calendar');
+        const timeRange = getCalendarTimeRange();
 
         calendar = new FullCalendar.Calendar(calendarEl, {
             initialView: window.innerWidth < 768 ? 'timeGridDay' : 'timeGridWeek',
@@ -73,8 +142,8 @@
                 right: 'timeGridWeek,timeGridDay'
             },
             slotDuration: '00:30:00',
-            slotMinTime: '06:00:00',
-            slotMaxTime: '22:00:00',
+            slotMinTime: timeRange.slotMinTime,
+            slotMaxTime: timeRange.slotMaxTime,
             allDaySlot: false,
             editable: true,
             droppable: true,
@@ -86,7 +155,8 @@
             selectLongPressDelay: 100,
             weekends: true,
             firstDay: 1, // Monday
-            height: 'auto',
+            height: '100%',
+            expandRows: true, // Expand time slots to fill available height
 
             // Event sources
             events: fetchEvents,
@@ -573,6 +643,72 @@
         });
 
         return selections;
+    }
+
+    // Settings Functions
+    function initSettings() {
+        const settingsBtn = document.getElementById('settingsBtn');
+        const settingsDialog = document.getElementById('settingsDialog');
+        const settingsForm = document.getElementById('settingsForm');
+        const settingsCancelBtn = document.getElementById('settingsCancelBtn');
+        const presetSelect = document.getElementById('timeRangePreset');
+        const customTimeRange = document.getElementById('customTimeRange');
+        const customStartTime = document.getElementById('customStartTime');
+        const customEndTime = document.getElementById('customEndTime');
+
+        // Load current settings into the form
+        function loadSettingsIntoForm() {
+            const settings = getTimeRangeSettings();
+            presetSelect.value = settings.preset;
+            customStartTime.value = settings.customStart;
+            customEndTime.value = settings.customEnd;
+
+            // Show/hide custom time range inputs
+            if (settings.preset === 'custom') {
+                customTimeRange.classList.remove('hidden');
+            } else {
+                customTimeRange.classList.add('hidden');
+            }
+        }
+
+        // Open settings dialog
+        settingsBtn.addEventListener('click', () => {
+            loadSettingsIntoForm();
+            settingsDialog.showModal();
+        });
+
+        // Handle preset change
+        presetSelect.addEventListener('change', () => {
+            if (presetSelect.value === 'custom') {
+                customTimeRange.classList.remove('hidden');
+            } else {
+                customTimeRange.classList.add('hidden');
+            }
+        });
+
+        // Cancel button
+        settingsCancelBtn.addEventListener('click', () => {
+            settingsDialog.close();
+        });
+
+        // Save settings
+        settingsForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+
+            const settings = {
+                preset: presetSelect.value,
+                customStart: customStartTime.value,
+                customEnd: customEndTime.value
+            };
+
+            saveTimeRangeSettings(settings);
+            settingsDialog.close();
+
+            // Apply new time range to calendar
+            const timeRange = getCalendarTimeRange();
+            calendar.setOption('slotMinTime', timeRange.slotMinTime);
+            calendar.setOption('slotMaxTime', timeRange.slotMaxTime);
+        });
     }
 
     // Sidebar Functions

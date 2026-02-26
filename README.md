@@ -15,6 +15,7 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
 - **Custom Field Tracking**: Track time in custom numeric fields (e.g., Billable Time) with automatic totals
 - **Source Tracking**: Visual indicator distinguishes JiraTime entries from those created in Jira/JSM
 - **Manager Impersonation**: Super users can view team members' calendars in read-only mode
+- **Configurable Time Range**: Adjust visible hours for different shifts (day, night, custom)
 - **Recent Issues**: Quick access to your 5 most recently used issues
 - **External Links**: Click the link icon on any issue to open it in Jira
 - **Mobile Responsive**: Collapsible sidebar, day view, and tap-to-create workflow
@@ -280,6 +281,20 @@ The hours widget shows your logged hours for the current week:
 - **Green**: Target hours met or exceeded
 
 Configure your weekly target in `config.toml` with `HOURS_TARGET`.
+
+### Time Range Settings
+
+Click the gear icon (⚙) in the sidebar footer to configure the visible time range on the calendar.
+
+**Presets:**
+- **Day Shift** (6am - 10pm) - default
+- **Early Shift** (4am - 2pm)
+- **Late Shift** (2pm - 12am)
+- **Night Shift** (8pm - 8am) - overnight range
+- **Full Day** (12am - 12am)
+- **Custom** - specify your own start/end times
+
+Overnight ranges (where end time is before start time) are fully supported. Settings are stored in your browser and persist across sessions.
 
 ## Configuration Reference
 
