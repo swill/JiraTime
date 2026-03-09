@@ -6,6 +6,13 @@
     <title>JiraTime</title>
     <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.css" rel="stylesheet">
     <link href="/css/style.css" rel="stylesheet">
+    <script>
+        (function() {
+            if (localStorage.getItem('theme') === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
+        })();
+    </script>
 </head>
 <body>
     <div class="app-container">
@@ -111,6 +118,14 @@
     <dialog id="settingsDialog">
         <form id="settingsForm" method="dialog">
             <h2>Calendar Settings</h2>
+
+            <div class="form-group">
+                <label>Theme</label>
+                <select id="themeSelect">
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                </select>
+            </div>
 
             <div class="form-group">
                 <label>Time Range Preset</label>

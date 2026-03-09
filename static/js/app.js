@@ -37,6 +37,23 @@
         localStorage.setItem('timeRangeSettings', JSON.stringify(settings));
     }
 
+    // Theme functions
+    function getTheme() {
+        return localStorage.getItem('theme') || 'light';
+    }
+
+    function saveTheme(theme) {
+        localStorage.setItem('theme', theme);
+    }
+
+    function applyTheme(theme) {
+        if (theme === 'dark') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+        } else {
+            document.documentElement.removeAttribute('data-theme');
+        }
+    }
+
     // Convert time range settings to FullCalendar format
     // Handles overnight ranges by extending end time past 24:00
     function getCalendarTimeRange() {
@@ -655,6 +672,7 @@
         const customTimeRange = document.getElementById('customTimeRange');
         const customStartTime = document.getElementById('customStartTime');
         const customEndTime = document.getElementById('customEndTime');
+        const themeSelect = document.getElementById('themeSelect');
 
         // Load current settings into the form
         function loadSettingsIntoForm() {
@@ -662,6 +680,7 @@
             presetSelect.value = settings.preset;
             customStartTime.value = settings.customStart;
             customEndTime.value = settings.customEnd;
+            themeSelect.value = getTheme();
 
             // Show/hide custom time range inputs
             if (settings.preset === 'custom') {
@@ -702,6 +721,11 @@
             };
 
             saveTimeRangeSettings(settings);
+
+            const theme = themeSelect.value;
+            saveTheme(theme);
+            applyTheme(theme);
+
             settingsDialog.close();
 
             // Apply new time range to calendar

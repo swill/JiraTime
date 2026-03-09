@@ -788,3 +788,335 @@ dialog h2 {
     outline: none;
     border-color: #0052cc;
 }
+
+/* ============================================================
+   Dark Mode
+   ============================================================ */
+
+html[data-theme="dark"] {
+    --fc-border-color: #3c3c3c;
+    --fc-today-bg-color: rgba(77, 157, 224, 0.1);
+    --fc-neutral-bg-color: rgba(60, 60, 60, 0.3);
+    --fc-neutral-text-color: #aaa;
+    --fc-page-bg-color: #252526;
+    --fc-list-event-hover-bg-color: #3c3c3c;
+    --fc-non-business-color: rgba(60, 60, 60, 0.3);
+}
+
+html[data-theme="dark"] body {
+    background: #1e1e1e;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .sidebar {
+    background: #252526;
+    border-right-color: #3c3c3c;
+}
+
+html[data-theme="dark"] .sidebar-header {
+    border-bottom-color: #3c3c3c;
+}
+
+html[data-theme="dark"] .sidebar-header h1 {
+    color: #4d9de0;
+}
+
+html[data-theme="dark"] .user-info {
+    color: #aaa;
+}
+
+html[data-theme="dark"] .search-container {
+    border-bottom-color: #3c3c3c;
+}
+
+html[data-theme="dark"] .search-container input {
+    background: #2d2d2d;
+    border-color: #555;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .search-container input:focus {
+    border-color: #4d9de0;
+}
+
+html[data-theme="dark"] .hours-widget {
+    background: #2d2d2d;
+    border-bottom-color: #3c3c3c;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .hours-widget.under {
+    background: #3d1a14;
+    color: #ff8f73;
+}
+
+html[data-theme="dark"] .hours-widget.met {
+    background: #143325;
+    color: #57d9a3;
+}
+
+html[data-theme="dark"] .sidebar-section h3 {
+    color: #aaa;
+}
+
+html[data-theme="dark"] .recent-section,
+html[data-theme="dark"] .search-results-section {
+    border-color: #3c3c3c;
+}
+
+html[data-theme="dark"] .issues-section h3 {
+    background: #252526;
+    color: #aaa;
+}
+
+html[data-theme="dark"] .search-results-section h3 {
+    background: #252526;
+    color: #aaa;
+}
+
+html[data-theme="dark"] .project-header {
+    background: #3c3c3c;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .project-header:hover {
+    background: #4c4c4c;
+}
+
+html[data-theme="dark"] .issue-item {
+    background: #2d2d2d;
+    border-color: #3c3c3c;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .issue-item:hover {
+    background: #3c3c3c;
+    border-color: #4d9de0;
+}
+
+html[data-theme="dark"] .issue-item.selected {
+    background: #1a3066;
+    border-color: #4d9de0;
+    box-shadow: 0 0 0 2px rgba(77, 157, 224, 0.2);
+}
+
+html[data-theme="dark"] .issue-key {
+    color: #4d9de0;
+}
+
+html[data-theme="dark"] .issue-link {
+    color: #aaa;
+}
+
+html[data-theme="dark"] .issue-link:hover {
+    background-color: #4c4c4c;
+    color: #4d9de0;
+}
+
+html[data-theme="dark"] .sidebar-footer {
+    border-top-color: #3c3c3c;
+}
+
+html[data-theme="dark"] #calendar {
+    background: #252526;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+html[data-theme="dark"] .fc {
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .fc-col-header-cell {
+    background: #2d2d2d;
+}
+
+html[data-theme="dark"] .fc-col-header-cell-cushion {
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .fc-timegrid-axis,
+html[data-theme="dark"] .fc-timegrid-slot-label {
+    color: #aaa;
+}
+
+html[data-theme="dark"] .fc-scrollgrid,
+html[data-theme="dark"] .fc-scrollgrid td,
+html[data-theme="dark"] .fc-scrollgrid th {
+    border-color: #3c3c3c;
+}
+
+html[data-theme="dark"] .fc-toolbar-title {
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .fc-timegrid-col {
+    background: #252526;
+}
+
+html[data-theme="dark"] .fc-timegrid-col.fc-day-today {
+    background: rgba(77, 157, 224, 0.1) !important;
+}
+
+html[data-theme="dark"] .fc-daygrid-day {
+    background: #252526;
+}
+
+html[data-theme="dark"] .fc-daygrid-day.fc-day-today {
+    background: rgba(77, 157, 224, 0.1) !important;
+}
+
+html[data-theme="dark"] .loading-overlay {
+    background: rgba(0, 0, 0, 0.7);
+}
+
+html[data-theme="dark"] dialog {
+    background: #252526;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] dialog h2 {
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .form-group label {
+    color: #aaa;
+}
+
+html[data-theme="dark"] .form-group input,
+html[data-theme="dark"] .form-group textarea {
+    background: #2d2d2d;
+    border-color: #555;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .form-group input:focus,
+html[data-theme="dark"] .form-group textarea:focus {
+    border-color: #4d9de0;
+}
+
+html[data-theme="dark"] .form-group input[readonly] {
+    background: #333;
+    color: #aaa;
+}
+
+html[data-theme="dark"] .btn-secondary {
+    background: #3c3c3c;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .btn-secondary:hover {
+    background: #4c4c4c;
+}
+
+html[data-theme="dark"] #settingsDialog select {
+    background: #2d2d2d;
+    border-color: #555;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] #settingsDialog select:focus {
+    border-color: #4d9de0;
+}
+
+html[data-theme="dark"] .time-range-inputs input[type="time"] {
+    background: #2d2d2d;
+    border-color: #555;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .time-range-inputs span,
+html[data-theme="dark"] .help-text {
+    color: #aaa;
+}
+
+html[data-theme="dark"] .custom-field-value {
+    color: #aaa;
+}
+
+html[data-theme="dark"] .impersonation-bar {
+    background: #3d3410;
+    border-color: #ffab00;
+}
+
+html[data-theme="dark"] .viewing-as {
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] #impersonateSearch {
+    background: #2d2d2d;
+    border-color: #555;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] #impersonateSearch:focus {
+    border-color: #4d9de0;
+}
+
+html[data-theme="dark"] .impersonate-results {
+    background: #252526;
+    border-color: #555;
+}
+
+html[data-theme="dark"] .impersonate-user-item:hover {
+    background: #3c3c3c;
+}
+
+html[data-theme="dark"] .issue-item.fc-dragging {
+    background: #4d9de0;
+    color: #fff;
+}
+
+/* Scrollbars (sidebar) */
+html[data-theme="dark"] .sidebar {
+    scrollbar-color: #555 #252526;
+    scrollbar-width: thin;
+}
+
+html[data-theme="dark"] .sidebar::-webkit-scrollbar {
+    width: 6px;
+}
+
+html[data-theme="dark"] .sidebar::-webkit-scrollbar-track {
+    background: #252526;
+}
+
+html[data-theme="dark"] .sidebar::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 3px;
+}
+
+html[data-theme="dark"] .sidebar::-webkit-scrollbar-thumb:hover {
+    background: #777;
+}
+
+html[data-theme="dark"] .issues-section .issue-list,
+html[data-theme="dark"] .search-results-section .issue-list {
+    scrollbar-color: #555 #252526;
+    scrollbar-width: thin;
+}
+
+html[data-theme="dark"] .issues-section .issue-list::-webkit-scrollbar,
+html[data-theme="dark"] .search-results-section .issue-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+html[data-theme="dark"] .issues-section .issue-list::-webkit-scrollbar-track,
+html[data-theme="dark"] .search-results-section .issue-list::-webkit-scrollbar-track {
+    background: #252526;
+}
+
+html[data-theme="dark"] .issues-section .issue-list::-webkit-scrollbar-thumb,
+html[data-theme="dark"] .search-results-section .issue-list::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 3px;
+}
+
+html[data-theme="dark"] .issues-section .issue-list::-webkit-scrollbar-thumb:hover,
+html[data-theme="dark"] .search-results-section .issue-list::-webkit-scrollbar-thumb:hover {
+    background: #777;
+}
+
+/* datetime-local native picker icon */
+html[data-theme="dark"] input[type="datetime-local"] {
+    color-scheme: dark;
+}
