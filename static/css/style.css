@@ -1116,6 +1116,29 @@ html[data-theme="dark"] .search-results-section .issue-list::-webkit-scrollbar-t
     background: #777;
 }
 
+/* FullCalendar scrollable area (right side of calendar) */
+html[data-theme="dark"] .fc-scroller {
+    scrollbar-color: #555 #252526;
+    scrollbar-width: thin;
+}
+
+html[data-theme="dark"] .fc-scroller::-webkit-scrollbar {
+    width: 6px;
+}
+
+html[data-theme="dark"] .fc-scroller::-webkit-scrollbar-track {
+    background: #252526;
+}
+
+html[data-theme="dark"] .fc-scroller::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 3px;
+}
+
+html[data-theme="dark"] .fc-scroller::-webkit-scrollbar-thumb:hover {
+    background: #777;
+}
+
 /* datetime-local native picker icon */
 html[data-theme="dark"] input[type="datetime-local"] {
     color-scheme: dark;
