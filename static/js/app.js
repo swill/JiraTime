@@ -374,6 +374,19 @@
     }
 
     // API Functions
+    function extractErrorMessage(text) {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            try {
+                const parsed = JSON.parse(jsonMatch[0]);
+                if (parsed.errorMessages && parsed.errorMessages.length > 0) {
+                    return parsed.errorMessages.join(' ');
+                }
+            } catch (e) { /* ignore parse errors */ }
+        }
+        return text.trim();
+    }
+
     async function createEvent(issueKey, start, durationMin, description) {
         if (isViewOnlyMode()) {
             alert('Cannot create events while viewing another user\'s calendar');
@@ -395,14 +408,14 @@
             if (!response.ok) {
                 const text = await response.text();
                 console.error('Create event failed:', text);
-                throw new Error('Failed to create event');
+                throw new Error(extractErrorMessage(text));
             }
 
             calendar.refetchEvents();
             updateHoursWidget();
         } catch (error) {
             console.error('Error creating event:', error);
-            alert('Failed to create time entry');
+            alert('Failed to create time entry: ' + error.message);
         } finally {
             hideLoading();
         }
@@ -430,13 +443,13 @@
             if (!response.ok) {
                 const text = await response.text();
                 console.error('Update event failed:', text);
-                throw new Error('Failed to update event');
+                throw new Error(extractErrorMessage(text));
             }
 
             updateHoursWidget();
         } catch (error) {
             console.error('Error updating event:', error);
-            alert('Failed to update time entry');
+            alert('Failed to update time entry: ' + error.message);
             if (revertFn) revertFn();
             calendar.refetchEvents();
         } finally {
@@ -456,14 +469,16 @@
             });
 
             if (!response.ok) {
-                throw new Error('Failed to delete event');
+                const text = await response.text();
+                console.error('Delete event failed:', text);
+                throw new Error(extractErrorMessage(text));
             }
 
             calendar.refetchEvents();
             updateHoursWidget();
         } catch (error) {
             console.error('Error deleting event:', error);
-            alert('Failed to delete time entry');
+            alert('Failed to delete time entry: ' + error.message);
         } finally {
             hideLoading();
         }

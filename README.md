@@ -396,6 +396,17 @@ jiratime/
 - Check browser console for API errors
 - Ensure you have worklogs in the visible date range
 
+### "ERROR: You can not edit the issue as it is in a non-editable workflow state."
+This error occurs when trying to log time against a Jira issue that is in a closed/terminal workflow state (e.g. Done, Closed, Resolved). There are two options:
+
+**Option 1:** Ask a project lead to transition the issue back to an editable state, log the time, then close it again.
+
+**Option 2:** Ask a Jira site admin to add the `jira.issue.editable = true` property to the relevant workflow status. Note that this makes the **entire issue** editable (not just worklogs) for anyone in that status — consider whether that trade-off is acceptable before making this change.
+
+To add the property (requires Jira site admin):
+- **Company-managed projects:** Settings gear → Work items → Workflows → Edit the workflow → click the status (e.g. "Done") → Add property → key: `jira.issue.editable`, value: `true` → Save and publish.
+- **Team-managed projects:** Project Settings → Work types → select the work type → Edit workflow → click the status → Add property → key: `jira.issue.editable`, value: `true` → Save and publish.
+
 ### Session expires frequently
 - The app automatically refreshes tokens and persists sessions across restarts
 - Sessions are stored in `sessions.json` and tokens in `tokens.json`

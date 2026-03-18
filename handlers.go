@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -90,7 +91,7 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	worklog, err := client.CreateWorklog(r.Context(), req.IssueKey, start, durationSeconds, req.Description)
 	if err != nil {
 		logrus.Errorf("Failed to create worklog: %v", err)
-		http.Error(w, "Failed to create event", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to create worklog: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -179,7 +180,7 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 	_, err = client.UpdateWorklog(r.Context(), issueKey, worklogID, start, durationSeconds, req.Description)
 	if err != nil {
 		logrus.Errorf("Failed to update worklog: %v", err)
-		http.Error(w, "Failed to update event", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to update worklog: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -244,7 +245,7 @@ func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 
 	if err := client.DeleteWorklog(r.Context(), issueKey, worklogID); err != nil {
 		logrus.Errorf("Failed to delete worklog: %v", err)
-		http.Error(w, "Failed to delete event", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to delete worklog: %v", err), http.StatusInternalServerError)
 		return
 	}
 
