@@ -138,7 +138,6 @@
             initSearch();
             initDialog();
             initSettings();
-            updateHoursWidget();
             checkMobileView();
             window.addEventListener('resize', checkMobileView);
         } finally {
@@ -190,6 +189,11 @@
             eventReceive: handleEventReceive, // Handle external drops
             select: handleSelect,
             dateClick: handleDateClick, // For mobile tap-to-create
+
+            // Update hours widget when the visible date range changes
+            datesSet: function(info) {
+                updateHoursWidget(info.start);
+            },
 
             // Event rendering
             eventContent: function(arg) {
@@ -412,7 +416,7 @@
             }
 
             calendar.refetchEvents();
-            updateHoursWidget();
+            updateHoursWidget(calendar ? calendar.view.activeStart : undefined);
         } catch (error) {
             console.error('Error creating event:', error);
             alert('Failed to create time entry: ' + error.message);
@@ -446,7 +450,7 @@
                 throw new Error(extractErrorMessage(text));
             }
 
-            updateHoursWidget();
+            updateHoursWidget(calendar ? calendar.view.activeStart : undefined);
         } catch (error) {
             console.error('Error updating event:', error);
             alert('Failed to update time entry: ' + error.message);
@@ -475,7 +479,7 @@
             }
 
             calendar.refetchEvents();
-            updateHoursWidget();
+            updateHoursWidget(calendar ? calendar.view.activeStart : undefined);
         } catch (error) {
             console.error('Error deleting event:', error);
             alert('Failed to delete time entry: ' + error.message);
@@ -563,7 +567,7 @@
                     }
 
                     calendar.refetchEvents();
-                    updateHoursWidget();
+                    updateHoursWidget(calendar ? calendar.view.activeStart : undefined);
                 } else {
                     // Create new event
                     await createEvent(issueKey, start, duration, description);
@@ -766,7 +770,7 @@
                 await fetch('/api/refresh', { method: 'POST' });
                 await loadIssues();
                 calendar.refetchEvents();
-                updateHoursWidget();
+                updateHoursWidget(calendar ? calendar.view.activeStart : undefined);
             } finally {
                 hideLoading();
             }
@@ -911,7 +915,7 @@
             await loadUserInfo();
             await loadIssues();
             calendar.refetchEvents();
-            updateHoursWidget();
+            updateHoursWidget(calendar ? calendar.view.activeStart : undefined);
         } catch (error) {
             console.error('Error starting impersonation:', error);
             alert('Failed to start impersonation');
@@ -935,7 +939,7 @@
             await loadUserInfo();
             await loadIssues();
             calendar.refetchEvents();
-            updateHoursWidget();
+            updateHoursWidget(calendar ? calendar.view.activeStart : undefined);
         } catch (error) {
             console.error('Error stopping impersonation:', error);
             alert('Failed to stop impersonation');
@@ -1226,9 +1230,12 @@
     }
 
     // Hours Widget
-    async function updateHoursWidget() {
+    async function updateHoursWidget(weekDate) {
         try {
-            const response = await fetch('/api/hours');
+            const url = weekDate
+                ? `/api/hours?week=${weekDate.toISOString().slice(0, 10)}`
+                : '/api/hours';
+            const response = await fetch(url);
             if (!response.ok) {
                 throw new Error('Failed to fetch hours');
             }
