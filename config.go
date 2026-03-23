@@ -5,18 +5,6 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Default custom time fields - these track time in minutes on issues
-var defaultCustomTimeFields = []CustomTimeField{
-	{ID: "customfield_11710", Label: "Billable Time"},
-	{ID: "customfield_11712", Label: "Smart Hands and Eyes"},
-	{ID: "customfield_12073", Label: "Smart Hands and Eyes (After Hours)"},
-}
-
-// GetCustomTimeFields returns the configured custom time fields
-func GetCustomTimeFields() []CustomTimeField {
-	return defaultCustomTimeFields
-}
-
 // IsSuperUser checks if the given account ID is configured as a super user
 func IsSuperUser(accountID string) bool {
 	superUsers := viper.GetStringSlice("SUPER_USERS")

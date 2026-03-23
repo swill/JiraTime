@@ -12,7 +12,6 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
 - **Edit Dialog**: Click any event to edit details or delete
 - **Hours Tracking**: Visual widget showing weekly hours vs. target
 - **Search**: Filter sidebar issues and search all Jira issues
-- **Custom Field Tracking**: Track time in custom numeric fields (e.g., Billable Time) with automatic totals
 - **Source Tracking**: Visual indicator distinguishes JiraTime entries from those created in Jira/JSM
 - **Manager Impersonation**: Super users can view team members' calendars in read-only mode
 - **Configurable Time Range**: Adjust visible hours for different shifts (day, night, custom)
@@ -224,29 +223,6 @@ These time periods are configurable via `ACTIVE_ISSUES_WEEKS` and `DONE_ISSUES_W
 
 **Search Results** may include some issues also shown in Active Issues.
 
-### Custom Field Tracking
-
-JiraTime can track worklog time in custom numeric fields on Jira issues. This is useful for tracking categories like billable time or specific work types.
-
-**Supported Custom Fields:**
-| Field ID | Label |
-|----------|-------|
-| `customfield_11710` | Billable Time |
-| `customfield_11712` | Smart Hands and Eyes |
-| `customfield_12073` | Smart Hands and Eyes (After Hours) |
-
-**How it works:**
-1. When editing a time entry, checkboxes appear for any custom fields available on that issue
-2. Check a field to add the worklog's duration to that field's running total
-3. The current total (in hours) is shown next to each checkbox
-4. Unchecking a field removes the worklog's contribution from the total
-5. Deleting a worklog automatically removes its contributions from all custom fields
-
-**Notes:**
-- Custom fields must already exist on the Jira issue to appear as options
-- Contributions are tracked per-worklog using Jira's worklog properties API
-- If a worklog's duration changes (including via drag-resize), the delta is automatically applied to checked custom fields
-
 ### Source Tracking
 
 Calendar events show a visual indicator to distinguish their origin:
@@ -370,10 +346,8 @@ jiratime/
 | POST | `/api/events` | Create a worklog |
 | PUT | `/api/events/{id}` | Update a worklog |
 | DELETE | `/api/events/{id}` | Delete a worklog |
-| GET | `/api/events/{id}/contributions` | Get worklog's custom field contributions |
 | GET | `/api/issues` | Get issues assigned to current user |
 | GET | `/api/issues/search?q=X` | Search all Jira issues by text |
-| GET | `/api/issues/{key}/custom-fields` | Get available custom fields for an issue |
 | GET | `/api/hours?week=X` | Get weekly hours summary |
 | POST | `/api/refresh` | Force cache refresh |
 | GET | `/api/user` | Get current user info |

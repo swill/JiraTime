@@ -490,8 +490,6 @@
 
     // Dialog Functions
     let currentEditingEvent = null;
-    let currentCustomFields = []; // Available custom fields for current issue
-    let currentContributions = {}; // Current worklog's contributions
 
     function initDialog() {
         const dialog = document.getElementById('editDialog');
@@ -536,9 +534,6 @@
             const description = document.getElementById('eventDescription').value;
             const issueKey = document.getElementById('eventIssueKey').value;
 
-            // Get custom field selections
-            const customFieldSelections = getCustomFieldSelections();
-
             dialog.close();
             showLoading();
 
@@ -550,11 +545,6 @@
                         duration_min: duration,
                         description: description
                     };
-
-                    // Include custom field selections if there are available fields
-                    if (currentCustomFields.some(f => f.available)) {
-                        body.custom_field_selections = customFieldSelections;
-                    }
 
                     const response = await fetch(`/api/events/${encodeURIComponent(eventId)}`, {
                         method: 'PUT',
@@ -602,83 +592,7 @@
         deleteBtn.style.display = isViewOnlyMode() ? 'none' : 'inline-block';
         saveBtn.style.display = isViewOnlyMode() ? 'none' : 'inline-block';
 
-        // Reset custom fields state
-        currentCustomFields = [];
-        currentContributions = {};
-
-        // Fetch custom fields and contributions in parallel
-        try {
-            const [fieldsRes, contribRes] = await Promise.all([
-                fetch(`/api/issues/${encodeURIComponent(event.extendedProps.issueKey)}/custom-fields`),
-                fetch(`/api/events/${encodeURIComponent(eventId)}/contributions`)
-            ]);
-
-            if (fieldsRes.ok) {
-                currentCustomFields = await fieldsRes.json();
-            }
-            if (contribRes.ok) {
-                const contribData = await contribRes.json();
-                currentContributions = contribData.contributions || {};
-            }
-        } catch (error) {
-            console.error('Error fetching custom field data:', error);
-        }
-
-        renderCustomFieldCheckboxes();
         dialog.showModal();
-    }
-
-    function renderCustomFieldCheckboxes() {
-        const container = document.getElementById('customFieldCheckboxes');
-        const group = document.getElementById('customFieldsGroup');
-        container.innerHTML = '';
-
-        // Filter to only available fields
-        const availableFields = currentCustomFields.filter(f => f.available);
-
-        if (availableFields.length === 0) {
-            group.style.display = 'none';
-            return;
-        }
-
-        group.style.display = 'block';
-
-        availableFields.forEach(field => {
-            const isChecked = currentContributions[field.id] > 0;
-            const currentValue = field.current_value || 0;
-            const hoursValue = (currentValue / 60).toFixed(1);
-
-            const wrapper = document.createElement('div');
-            wrapper.className = 'custom-field-checkbox';
-
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.id = `cf_${field.id}`;
-            checkbox.name = field.id;
-            checkbox.checked = isChecked;
-
-            const label = document.createElement('label');
-            label.htmlFor = `cf_${field.id}`;
-            label.innerHTML = `${field.label} <span class="custom-field-value">(${hoursValue}h)</span>`;
-
-            wrapper.appendChild(checkbox);
-            wrapper.appendChild(label);
-            container.appendChild(wrapper);
-        });
-    }
-
-    function getCustomFieldSelections() {
-        const selections = {};
-        const availableFields = currentCustomFields.filter(f => f.available);
-
-        availableFields.forEach(field => {
-            const checkbox = document.getElementById(`cf_${field.id}`);
-            if (checkbox) {
-                selections[field.id] = checkbox.checked;
-            }
-        });
-
-        return selections;
     }
 
     // Settings Functions
