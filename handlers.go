@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -87,7 +89,16 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	durationSeconds := req.DurationMin * 60
 
 	client := NewJiraClient(session.Token, session.CloudID)
-	worklog, err := client.CreateWorklog(r.Context(), req.IssueKey, start, durationSeconds, req.Description)
+
+	// Route the worklog to a billable sub-task when one was selected
+	targetKey, err := resolveWorklogTarget(r.Context(), client, req.IssueKey, req.SubtaskTypeID, req.SubtaskKey)
+	if err != nil {
+		logrus.Errorf("Failed to resolve worklog target: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to resolve sub-task: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	worklog, err := client.CreateWorklog(r.Context(), targetKey, start, durationSeconds, req.Description)
 	if err != nil {
 		logrus.Errorf("Failed to create worklog: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to create worklog: %v", err), http.StatusInternalServerError)
@@ -95,18 +106,18 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Mark this worklog as created by JiraTime
-	if err := client.SetWorklogProperty(r.Context(), req.IssueKey, worklog.ID, worklogSourcePropertyKey, WorklogSource{CreatedBy: "jiratime"}); err != nil {
+	if err := client.SetWorklogProperty(r.Context(), targetKey, worklog.ID, worklogSourcePropertyKey, WorklogSource{CreatedBy: "jiratime"}); err != nil {
 		logrus.Warnf("Failed to set worklog source property: %v", err)
 		// Don't fail - worklog was created successfully
 	}
 
 	// Return the created event
 	event := CalendarEvent{
-		ID:           req.IssueKey + "-" + worklog.ID,
-		Title:        "[" + req.IssueKey + "]",
+		ID:           targetKey + "-" + worklog.ID,
+		Title:        "[" + targetKey + "]",
 		Start:        start,
 		End:          start.Add(time.Duration(durationSeconds) * time.Second),
-		IssueKey:     req.IssueKey,
+		IssueKey:     targetKey,
 		WorklogID:    worklog.ID,
 		Description:  req.Description,
 		FromJiraTime: true,
@@ -161,6 +172,31 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 
 	client := NewJiraClient(session.Token, session.CloudID)
 
+	// Dialog saves send ParentKey so the sub-task association can change; when
+	// the target differs from where the worklog lives, it has to move
+	// (drag/resize updates omit ParentKey and leave the association alone)
+	if req.ParentKey != "" {
+		targetKey, err := resolveWorklogTarget(r.Context(), client, req.ParentKey, req.SubtaskTypeID, req.SubtaskKey)
+		if err != nil {
+			logrus.Errorf("Failed to resolve worklog target: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to resolve sub-task: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		if targetKey != issueKey {
+			newID, err := moveWorklog(r.Context(), client, issueKey, worklogID, targetKey, start, durationSeconds, req.Description)
+			if err != nil {
+				logrus.Errorf("Failed to move worklog: %v", err)
+				http.Error(w, fmt.Sprintf("Failed to move worklog: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			w.WriteHeader(http.StatusOK)
+			writeJSON(w, map[string]string{"status": "ok", "id": newID})
+			return
+		}
+	}
+
 	_, err = client.UpdateWorklog(r.Context(), issueKey, worklogID, start, durationSeconds, req.Description)
 	if err != nil {
 		logrus.Errorf("Failed to update worklog: %v", err)
@@ -170,6 +206,31 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// moveWorklog re-homes a worklog onto another issue. Jira has no move API, so
+// this creates the worklog on the target first and then deletes the original -
+// the time is never silently lost, and a failed delete is rolled back so it is
+// never doubled either. Returns the new event ID.
+func moveWorklog(ctx context.Context, client *JiraClient, fromKey, worklogID, toKey string, start time.Time, durationSeconds int, description string) (string, error) {
+	worklog, err := client.CreateWorklog(ctx, toKey, start, durationSeconds, description)
+	if err != nil {
+		return "", fmt.Errorf("failed to create worklog on %s: %w", toKey, err)
+	}
+
+	if err := client.SetWorklogProperty(ctx, toKey, worklog.ID, worklogSourcePropertyKey, WorklogSource{CreatedBy: "jiratime"}); err != nil {
+		logrus.Warnf("Failed to set worklog source property: %v", err)
+	}
+
+	if err := client.DeleteWorklog(ctx, fromKey, worklogID); err != nil {
+		// Best-effort rollback of the copy so time is not double-counted
+		if rbErr := client.DeleteWorklog(ctx, toKey, worklog.ID); rbErr != nil {
+			return "", fmt.Errorf("failed to remove original worklog from %s AND failed to roll back the copy on %s - time may be logged twice, please fix in Jira: %v", fromKey, toKey, err)
+		}
+		return "", fmt.Errorf("failed to remove original worklog from %s (change rolled back): %w", fromKey, err)
+	}
+
+	return toKey + "-" + worklog.ID, nil
 }
 
 func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
@@ -327,6 +388,7 @@ func handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cache.InvalidateAll(session.AccountID)
+	cache.InvalidateSite(session.CloudID)
 	w.WriteHeader(http.StatusOK)
 	writeJSON(w, map[string]string{"status": "ok"})
 }
@@ -339,11 +401,11 @@ func handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]interface{}{
-		"account_id":   session.AccountID,
-		"display_name": session.DisplayName,
-		"email":        session.Email,
-		"avatar_url":   session.AvatarURL,
-		"site_url":     session.SiteURL,
+		"account_id":    session.AccountID,
+		"display_name":  session.DisplayName,
+		"email":         session.Email,
+		"avatar_url":    session.AvatarURL,
+		"site_url":      session.SiteURL,
 		"is_super_user": IsSuperUser(session.AccountID),
 	}
 
@@ -455,6 +517,132 @@ func handleStopImpersonate(w http.ResponseWriter, r *http.Request) {
 	saveSession(session)
 
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// issueKeyPattern matches Jira issue keys like "PROJ-123" (project keys may
+// contain digits and underscores after the first letter)
+var issueKeyPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
+
+// handleSubtaskOptions returns the billable sub-task choices for an issue.
+// If the issue is itself a billable sub-task, it is resolved to its parent and
+// the current association is reported so the edit dialog can pre-check it.
+func handleSubtaskOptions(w http.ResponseWriter, r *http.Request, issueKey string) {
+	session := getSessionFromRequest(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if !issueKeyPattern.MatchString(issueKey) {
+		http.Error(w, "Invalid issue key", http.StatusBadRequest)
+		return
+	}
+
+	client := NewJiraClient(session.Token, session.CloudID)
+
+	detail, err := client.GetIssueDetail(r.Context(), issueKey)
+	if err != nil {
+		logrus.Errorf("Failed to get issue %s: %v", issueKey, err)
+		http.Error(w, "Failed to get issue", http.StatusInternalServerError)
+		return
+	}
+
+	res := SubtaskOptionsRes{
+		BillableTypes: []SubtaskType{},
+		Subtasks:      []SubtaskInfo{},
+	}
+
+	billableTypes, err := client.GetBillableSubtaskTypes(r.Context(), detail.Fields.Project.Key)
+	if err != nil {
+		logrus.Warnf("Failed to resolve billable sub-task types for project %s: %v", detail.Fields.Project.Key, err)
+		billableTypes = []SubtaskType{}
+	}
+
+	// A billable sub-task resolves to its parent with the association pre-set
+	if detail.Fields.IssueType.Subtask && detail.Fields.Parent != nil && subtaskTypeByID(billableTypes, detail.Fields.IssueType.ID) != nil {
+		res.CurrentTypeID = detail.Fields.IssueType.ID
+		res.CurrentSubtask = detail.Key
+
+		detail, err = client.GetIssueDetail(r.Context(), detail.Fields.Parent.Key)
+		if err != nil {
+			logrus.Errorf("Failed to get parent issue: %v", err)
+			http.Error(w, "Failed to get parent issue", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	res.IssueKey = detail.Key
+	res.IssueSummary = detail.Fields.Summary
+	res.IssueTitle = fmt.Sprintf("[%s] %s", detail.Key, detail.Fields.Summary)
+
+	// Sub-tasks cannot have sub-tasks of their own, so a non-billable sub-task
+	// gets no checkbox options
+	if len(billableTypes) > 0 && !detail.Fields.IssueType.Subtask {
+		res.BillableTypes = billableTypes
+
+		for _, st := range detail.Fields.Subtasks {
+			if subtaskTypeByID(billableTypes, st.Fields.IssueType.ID) == nil {
+				continue
+			}
+			res.Subtasks = append(res.Subtasks, SubtaskInfo{
+				Key:     st.Key,
+				Summary: st.Fields.Summary,
+				TypeID:  st.Fields.IssueType.ID,
+				Status:  st.Fields.Status.Name,
+			})
+		}
+	}
+
+	writeJSON(w, res)
+}
+
+// resolveWorklogTarget determines which issue a worklog should be logged
+// against: a specific existing sub-task, a get-or-create sub-task of a billable
+// type (named after the type), or the parent issue itself.
+func resolveWorklogTarget(ctx context.Context, client *JiraClient, parentKey, subtaskTypeID, subtaskKey string) (string, error) {
+	if subtaskTypeID == "" && subtaskKey == "" {
+		return parentKey, nil
+	}
+
+	detail, err := client.GetIssueDetail(ctx, parentKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to get issue %s: %w", parentKey, err)
+	}
+
+	billableTypes, err := client.GetBillableSubtaskTypes(ctx, detail.Fields.Project.Key)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve billable sub-task types: %w", err)
+	}
+
+	// Specific existing sub-task chosen - verify it belongs to the parent and
+	// is a billable type before trusting the client-supplied key
+	if subtaskKey != "" {
+		for _, st := range detail.Fields.Subtasks {
+			if st.Key == subtaskKey && subtaskTypeByID(billableTypes, st.Fields.IssueType.ID) != nil {
+				return subtaskKey, nil
+			}
+		}
+		return "", fmt.Errorf("sub-task %s is not a billable sub-task of %s", subtaskKey, parentKey)
+	}
+
+	// Type-only selection: reuse the sub-task named after the type, or create it
+	billableType := subtaskTypeByID(billableTypes, subtaskTypeID)
+	if billableType == nil {
+		return "", fmt.Errorf("sub-task type %s is not available in project %s", subtaskTypeID, detail.Fields.Project.Key)
+	}
+
+	for _, st := range detail.Fields.Subtasks {
+		if st.Fields.IssueType.ID == billableType.ID && strings.EqualFold(st.Fields.Summary, billableType.Name) {
+			return st.Key, nil
+		}
+	}
+
+	newKey, err := client.CreateSubtask(ctx, detail.Fields.Project.ID, parentKey, billableType.ID, billableType.Name)
+	if err != nil {
+		return "", fmt.Errorf("failed to create sub-task: %w", err)
+	}
+
+	return newKey, nil
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {

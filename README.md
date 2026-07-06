@@ -13,6 +13,7 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
 - **Hours Tracking**: Visual widget showing weekly hours vs. target
 - **Search**: Filter sidebar issues and search all Jira issues
 - **Source Tracking**: Visual indicator distinguishes JiraTime entries from those created in Jira/JSM
+- **Billable Sub-tasks**: Log time against configured sub-task types (via the JiraMetadata app's `billable_subtasks` project property)
 - **Manager Impersonation**: Super users can view team members' calendars in read-only mode
 - **Configurable Time Range**: Adjust visible hours for different shifts (day, night, custom)
 - **Recent Issues**: Quick access to your 5 most recently used issues
@@ -165,6 +166,8 @@ JiraTime includes a `make deploy` command for deploying to a remote Linux server
 2. Drag the issue onto the calendar at the desired time
 3. A 30-minute entry is created automatically
 
+If the issue's project has billable sub-tasks configured (see [Billable Sub-tasks](#billable-sub-tasks)), the edit dialog opens instead so you can choose where the time goes before the entry is created.
+
 **By Selecting Time:**
 1. Click and drag on the calendar to select a time range
 2. (Note: You'll need to drag an issue to create the entry)
@@ -230,6 +233,27 @@ Calendar events show a visual indicator to distinguish their origin:
 - **Dashed left border**: Created externally (Jira, JSM, or other tools)
 
 This helps identify which entries were logged through JiraTime vs. native Jira interfaces.
+
+### Billable Sub-tasks
+
+Projects can define billable sub-task types using the companion [JiraMetadata](../jirametadata) Forge app, which stores them in the `jirametadata` project property:
+
+```
+GET /rest/api/3/project/{key}/properties/jirametadata
+{"key":"jirametadata","value":{"billable_subtasks":["11457","11490","11491"]}}
+```
+
+The IDs are sub-task issue type IDs. When a project has them configured:
+
+- **Creating an entry** (drag or tap) opens the edit dialog with a checkbox per configured sub-task type. Only one type can be selected at a time, and a checkbox can be unticked again.
+- Selecting a type reveals the parent issue's **existing sub-tasks of that type** (all statuses, shown with a status badge). Ticking one logs the time against that specific sub-task's worklog.
+- If a type is selected but no specific sub-task is ticked, the time goes to a sub-task **named after the type** (e.g. a "Billable Work" sub-task) — reused if it already exists under the parent, created if not.
+- If no type is selected, the time is logged against the parent issue as before.
+- Calendar events whose worklog lives on a billable sub-task are titled with the **parent issue plus the type** (e.g. `[PROJ-12] Fix login • Billable Work`), and reopening them shows the association pre-checked — including time logged directly in Jira/JSM on such a sub-task.
+- Changing the checkboxes on an existing entry **moves** the worklog (to the parent when unticked, or to the selected sub-task). Because Jira has no worklog-move API, this is done as create-then-delete: the copy is created first and rolled back if the delete fails, so time is never lost or double-counted. A moved entry counts as JiraTime-created (solid border), even if it was originally logged in Jira.
+- Dragging a billable sub-task itself from the sidebar resolves it to its parent, with the sub-task pre-checked in the dialog.
+
+Projects without `billable_subtasks` behave exactly as before — dragging creates the entry immediately and the dialog shows no checkboxes. The property and issue-type lookups are cached for 15 minutes; use the sidebar **Refresh** button to pick up configuration changes immediately.
 
 ### Manager Impersonation
 

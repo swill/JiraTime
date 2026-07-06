@@ -234,7 +234,10 @@
                     issueId: e.issue_id,
                     worklogId: e.worklog_id,
                     description: e.description,
-                    fromJiraTime: e.from_jiratime
+                    fromJiraTime: e.from_jiratime,
+                    parentKey: e.parent_key,
+                    subtaskTypeId: e.subtask_type_id,
+                    subtaskTypeName: e.subtask_type_name
                 }
             }));
 
@@ -334,11 +337,7 @@
         // Remove the temporary event that FullCalendar added
         event.remove();
 
-        // Add to recent issues
-        addToRecentIssues(issueKey, issueSummary);
-
-        // Create event with 30-minute duration via API
-        await createEvent(issueKey, event.start, 30, '');
+        await startCreateFlow(issueKey, issueSummary, event.start);
     }
 
     function handleSelect(info) {
@@ -350,11 +349,7 @@
             // Clear selection
             clearSelectedIssue();
 
-            // Add to recent issues
-            addToRecentIssues(issueKey, issueSummary);
-
-            // Create event at the selected time
-            createEvent(issueKey, info.start, 30, '');
+            startCreateFlow(issueKey, issueSummary, info.start);
         }
 
         calendar.unselect();
@@ -369,12 +364,47 @@
             // Clear selection
             clearSelectedIssue();
 
-            // Add to recent issues
-            addToRecentIssues(issueKey, issueSummary);
-
-            // Create event at the clicked time
-            createEvent(issueKey, info.date, 30, '');
+            startCreateFlow(issueKey, issueSummary, info.date);
         }
+    }
+
+    // Start the create flow for an issue dropped/tapped onto the calendar.
+    // Projects with billable sub-tasks configured open the edit dialog so a
+    // sub-task can be chosen; other projects keep the fast one-step logging.
+    async function startCreateFlow(issueKey, issueSummary, start) {
+        if (isViewOnlyMode()) {
+            alert('Cannot create events while viewing another user\'s calendar');
+            return;
+        }
+
+        let options = null;
+        showLoading();
+        try {
+            options = await fetchSubtaskOptions(issueKey);
+        } catch (error) {
+            console.error('Error loading sub-task options:', error);
+        } finally {
+            hideLoading();
+        }
+
+        if (!options || !options.billable_types || options.billable_types.length === 0) {
+            // No billable sub-tasks configured - create immediately
+            addToRecentIssues(issueKey, issueSummary);
+            await createEvent(issueKey, start, 30, '');
+            return;
+        }
+
+        // A billable sub-task resolves to its parent; track the parent as recent
+        addToRecentIssues(options.issue_key, options.issue_summary);
+        openCreateDialog(options, start);
+    }
+
+    async function fetchSubtaskOptions(issueKey) {
+        const response = await fetch(`/api/issues/${encodeURIComponent(issueKey)}/subtask-options`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch sub-task options');
+        }
+        return response.json();
     }
 
     // API Functions
@@ -391,22 +421,26 @@
         return text.trim();
     }
 
-    async function createEvent(issueKey, start, durationMin, description) {
+    async function createEvent(issueKey, start, durationMin, description, subtaskTypeId, subtaskKey) {
         if (isViewOnlyMode()) {
             alert('Cannot create events while viewing another user\'s calendar');
             return;
         }
         showLoading();
         try {
+            const body = {
+                issue_key: issueKey,
+                start: start.toISOString(),
+                duration_min: durationMin,
+                description: description
+            };
+            if (subtaskTypeId) body.subtask_type_id = subtaskTypeId;
+            if (subtaskKey) body.subtask_key = subtaskKey;
+
             const response = await fetch('/api/events', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    issue_key: issueKey,
-                    start: start.toISOString(),
-                    duration_min: durationMin,
-                    description: description
-                })
+                body: JSON.stringify(body)
             });
 
             if (!response.ok) {
@@ -490,6 +524,9 @@
 
     // Dialog Functions
     let currentEditingEvent = null;
+    let dialogSubtaskOptions = null; // Sub-task options for the open dialog (null = not loaded)
+    let selectedSubtaskTypeId = null;
+    let selectedSubtaskKey = null;
 
     function initDialog() {
         const dialog = document.getElementById('editDialog');
@@ -533,6 +570,9 @@
             const duration = parseInt(document.getElementById('eventDuration').value, 10);
             const description = document.getElementById('eventDescription').value;
             const issueKey = document.getElementById('eventIssueKey').value;
+            const subtaskTypeId = selectedSubtaskTypeId;
+            const subtaskKey = selectedSubtaskKey;
+            const subtaskOptions = dialogSubtaskOptions;
 
             dialog.close();
             showLoading();
@@ -546,6 +586,14 @@
                         description: description
                     };
 
+                    // Send the parent key so the backend can move the worklog
+                    // when the sub-task association changed
+                    if (subtaskOptions) {
+                        body.parent_key = subtaskOptions.issue_key;
+                        if (subtaskTypeId) body.subtask_type_id = subtaskTypeId;
+                        if (subtaskKey) body.subtask_key = subtaskKey;
+                    }
+
                     const response = await fetch(`/api/events/${encodeURIComponent(eventId)}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
@@ -553,18 +601,21 @@
                     });
 
                     if (!response.ok) {
-                        throw new Error('Failed to update event');
+                        const text = await response.text();
+                        console.error('Update event failed:', text);
+                        throw new Error(extractErrorMessage(text));
                     }
 
                     calendar.refetchEvents();
                     updateHoursWidget(calendar ? calendar.view.activeStart : undefined);
                 } else {
                     // Create new event
-                    await createEvent(issueKey, start, duration, description);
+                    await createEvent(issueKey, start, duration, description, subtaskTypeId, subtaskKey);
                 }
             } catch (error) {
                 console.error('Error saving event:', error);
-                alert('Failed to save time entry');
+                alert('Failed to save time entry: ' + error.message);
+                calendar.refetchEvents();
             } finally {
                 hideLoading();
             }
@@ -588,11 +639,213 @@
         document.getElementById('eventDuration').value = getDurationMinutes(event);
         document.getElementById('eventDescription').value = event.extendedProps.description || '';
 
+        // Load sub-task options; a worklog on a billable sub-task resolves to
+        // its parent with the current association pre-checked (this also covers
+        // time entered in Jira/JSM directly)
+        dialogSubtaskOptions = null;
+        showLoading();
+        try {
+            dialogSubtaskOptions = await fetchSubtaskOptions(event.extendedProps.issueKey);
+        } catch (error) {
+            // Dialog still works; the sub-task association just cannot be changed
+            console.error('Error loading sub-task options:', error);
+        } finally {
+            hideLoading();
+        }
+        renderSubtaskSection(dialogSubtaskOptions);
+
         title.textContent = isViewOnlyMode() ? 'View Time Entry' : 'Edit Time Entry';
         deleteBtn.style.display = isViewOnlyMode() ? 'none' : 'inline-block';
         saveBtn.style.display = isViewOnlyMode() ? 'none' : 'inline-block';
 
         dialog.showModal();
+    }
+
+    // Open the dialog to create a new entry (used when the issue's project has
+    // billable sub-tasks configured)
+    function openCreateDialog(options, start) {
+        const dialog = document.getElementById('editDialog');
+        const title = document.getElementById('dialogTitle');
+        const deleteBtn = document.getElementById('deleteBtn');
+        const saveBtn = dialog.querySelector('button[type="submit"]');
+
+        currentEditingEvent = null;
+        dialogSubtaskOptions = options;
+
+        document.getElementById('eventId').value = '';
+        document.getElementById('eventIssue').value = options.issue_title;
+        document.getElementById('eventIssueKey').value = options.issue_key;
+        document.getElementById('eventStart').value = formatDateTimeLocal(start);
+        document.getElementById('eventDuration').value = 30;
+        document.getElementById('eventDescription').value = '';
+
+        renderSubtaskSection(options);
+
+        title.textContent = 'New Time Entry';
+        deleteBtn.style.display = 'none';
+        saveBtn.style.display = 'inline-block';
+
+        dialog.showModal();
+    }
+
+    // Render the billable sub-task checkboxes. Type checkboxes act like
+    // toggleable radios (one at a time); selecting a type reveals its existing
+    // sub-tasks, where at most one can be picked.
+    function renderSubtaskSection(options) {
+        const section = document.getElementById('subtaskSection');
+        const container = document.getElementById('subtaskTypes');
+        container.innerHTML = '';
+        selectedSubtaskTypeId = null;
+        selectedSubtaskKey = null;
+
+        if (!options || !options.billable_types || options.billable_types.length === 0) {
+            section.classList.add('hidden');
+            return;
+        }
+
+        const disabled = !!isViewOnlyMode();
+
+        options.billable_types.forEach(type => {
+            const typeEl = document.createElement('div');
+            typeEl.className = 'subtask-type';
+
+            const typeLabel = document.createElement('label');
+            typeLabel.className = 'subtask-option';
+            const typeCheckbox = document.createElement('input');
+            typeCheckbox.type = 'checkbox';
+            typeCheckbox.className = 'subtask-type-checkbox';
+            typeCheckbox.dataset.typeId = type.id;
+            typeCheckbox.disabled = disabled;
+            const typeName = document.createElement('span');
+            typeName.textContent = type.name;
+            typeLabel.appendChild(typeCheckbox);
+            typeLabel.appendChild(typeName);
+            typeEl.appendChild(typeLabel);
+
+            const listEl = document.createElement('div');
+            listEl.className = 'subtask-list hidden';
+
+            const existing = (options.subtasks || []).filter(st => st.type_id === type.id);
+
+            // Show at a glance that this type already has sub-tasks
+            if (existing.length > 0) {
+                const count = document.createElement('span');
+                count.className = 'subtask-count';
+                count.textContent = existing.length === 1 ? '1 existing' : `${existing.length} existing`;
+                typeLabel.appendChild(count);
+            }
+            existing.forEach(st => {
+                const itemLabel = document.createElement('label');
+                itemLabel.className = 'subtask-option subtask-item';
+                const itemCheckbox = document.createElement('input');
+                itemCheckbox.type = 'checkbox';
+                itemCheckbox.className = 'subtask-item-checkbox';
+                itemCheckbox.dataset.subtaskKey = st.key;
+                itemCheckbox.disabled = disabled;
+                const itemText = document.createElement('span');
+                itemText.className = 'subtask-item-text';
+                const itemKey = document.createElement('span');
+                itemKey.className = 'subtask-key';
+                itemKey.textContent = st.key;
+                itemText.appendChild(itemKey);
+                itemText.appendChild(document.createTextNode(st.summary));
+                const statusBadge = document.createElement('span');
+                statusBadge.className = 'subtask-status';
+                statusBadge.textContent = st.status;
+                itemLabel.appendChild(itemCheckbox);
+                itemLabel.appendChild(itemText);
+                itemLabel.appendChild(statusBadge);
+                listEl.appendChild(itemLabel);
+
+                itemCheckbox.addEventListener('change', () => {
+                    if (itemCheckbox.checked) {
+                        // Selecting a sub-task implies its type: check it and
+                        // make it the only selected type/list
+                        typeCheckbox.checked = true;
+                        container.querySelectorAll('.subtask-type-checkbox').forEach(cb => {
+                            if (cb !== typeCheckbox) cb.checked = false;
+                        });
+                        container.querySelectorAll('.subtask-list').forEach(el => {
+                            if (el !== listEl) el.classList.add('hidden');
+                        });
+                        listEl.classList.remove('hidden');
+
+                        // Only one specific sub-task can be selected
+                        container.querySelectorAll('.subtask-item-checkbox').forEach(cb => {
+                            if (cb !== itemCheckbox) cb.checked = false;
+                        });
+                        selectedSubtaskTypeId = type.id;
+                        selectedSubtaskKey = st.key;
+                    } else {
+                        selectedSubtaskKey = null;
+                    }
+                    updateSubtaskHint(listEl, type.name);
+                });
+            });
+
+            const hint = document.createElement('p');
+            hint.className = 'subtask-hint hidden';
+            listEl.appendChild(hint);
+
+            typeEl.appendChild(listEl);
+            container.appendChild(typeEl);
+
+            typeCheckbox.addEventListener('change', () => {
+                if (typeCheckbox.checked) {
+                    // Only one sub-task type can be selected at a time
+                    container.querySelectorAll('.subtask-type-checkbox').forEach(cb => {
+                        if (cb !== typeCheckbox) cb.checked = false;
+                    });
+                    container.querySelectorAll('.subtask-list').forEach(el => {
+                        if (el !== listEl) el.classList.add('hidden');
+                    });
+                    container.querySelectorAll('.subtask-item-checkbox').forEach(cb => {
+                        cb.checked = false;
+                    });
+                    selectedSubtaskTypeId = type.id;
+                    selectedSubtaskKey = null;
+                    listEl.classList.remove('hidden');
+                } else {
+                    selectedSubtaskTypeId = null;
+                    selectedSubtaskKey = null;
+                    listEl.classList.add('hidden');
+                }
+                updateSubtaskHint(listEl, type.name);
+            });
+        });
+
+        // Pre-check the current association for existing entries on a billable
+        // sub-task (regardless of whether the time was logged here or in Jira)
+        if (options.current_type_id) {
+            const typeCb = container.querySelector(`.subtask-type-checkbox[data-type-id="${CSS.escape(options.current_type_id)}"]`);
+            if (typeCb) {
+                typeCb.checked = true;
+                typeCb.dispatchEvent(new Event('change'));
+
+                if (options.current_subtask) {
+                    const itemCb = container.querySelector(`.subtask-item-checkbox[data-subtask-key="${CSS.escape(options.current_subtask)}"]`);
+                    if (itemCb) {
+                        itemCb.checked = true;
+                        itemCb.dispatchEvent(new Event('change'));
+                    }
+                }
+            }
+        }
+
+        section.classList.remove('hidden');
+    }
+
+    function updateSubtaskHint(listEl, typeName) {
+        const hint = listEl.querySelector('.subtask-hint');
+        if (!hint) return;
+
+        const anyChecked = !!listEl.querySelector('.subtask-item-checkbox:checked');
+        if (listEl.classList.contains('hidden') || anyChecked) {
+            hint.classList.add('hidden');
+        } else {
+            hint.textContent = `Time will be logged to a "${typeName}" sub-task (created if needed)`;
+            hint.classList.remove('hidden');
+        }
     }
 
     // Settings Functions

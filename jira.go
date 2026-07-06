@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -236,7 +237,7 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 
 	searchReq := map[string]interface{}{
 		"jql":        jql,
-		"fields":     []string{"summary", "project"},
+		"fields":     []string{"summary", "project", "issuetype", "parent"},
 		"maxResults": 100,
 	}
 
@@ -262,6 +263,22 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 		worklogs, err := c.GetWorklogs(ctx, issue.Key)
 		if err != nil {
 			continue // Skip issues we can't get worklogs for
+		}
+
+		// Detect worklogs living on billable sub-tasks so the calendar can show
+		// them under their parent issue (works for time logged in Jira directly too)
+		title := fmt.Sprintf("[%s] %s", issue.Key, issue.Fields.Summary)
+		parentKey := ""
+		subtaskTypeID := ""
+		subtaskTypeName := ""
+		if issue.Fields.IssueType.Subtask && issue.Fields.Parent != nil {
+			billableTypes, err := c.GetBillableSubtaskTypes(ctx, issue.Fields.Project.Key)
+			if err == nil && subtaskTypeByID(billableTypes, issue.Fields.IssueType.ID) != nil {
+				parentKey = issue.Fields.Parent.Key
+				subtaskTypeID = issue.Fields.IssueType.ID
+				subtaskTypeName = issue.Fields.IssueType.Name
+				title = fmt.Sprintf("[%s] %s • %s", issue.Fields.Parent.Key, issue.Fields.Parent.Fields.Summary, subtaskTypeName)
+			}
 		}
 
 		for _, wl := range worklogs {
@@ -293,15 +310,18 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 			fromJiraTime := c.IsWorklogFromJiraTime(ctx, issue.Key, wl.ID)
 
 			events = append(events, CalendarEvent{
-				ID:           fmt.Sprintf("%s-%s", issue.Key, wl.ID),
-				Title:        fmt.Sprintf("[%s] %s", issue.Key, issue.Fields.Summary),
-				Start:        startTime,
-				End:          startTime.Add(time.Duration(wl.TimeSpentSeconds) * time.Second),
-				IssueKey:     issue.Key,
-				IssueID:      issue.ID,
-				WorklogID:    wl.ID,
-				Description:  description,
-				FromJiraTime: fromJiraTime,
+				ID:              fmt.Sprintf("%s-%s", issue.Key, wl.ID),
+				Title:           title,
+				Start:           startTime,
+				End:             startTime.Add(time.Duration(wl.TimeSpentSeconds) * time.Second),
+				IssueKey:        issue.Key,
+				IssueID:         issue.ID,
+				WorklogID:       wl.ID,
+				Description:     description,
+				FromJiraTime:    fromJiraTime,
+				ParentKey:       parentKey,
+				SubtaskTypeID:   subtaskTypeID,
+				SubtaskTypeName: subtaskTypeName,
 			})
 		}
 	}
@@ -461,6 +481,270 @@ func (c *JiraClient) IsWorklogFromJiraTime(ctx context.Context, issueKey, worklo
 
 	// If property exists, it's from JiraTime
 	return resp.StatusCode == http.StatusOK
+}
+
+// GetProjectBillableSubtasks returns the sub-task issue type IDs configured for
+// a project in the jirametadata project property (billable_subtasks field).
+// Returns an empty slice when the property is not set.
+func (c *JiraClient) GetProjectBillableSubtasks(ctx context.Context, projectKey string) ([]string, error) {
+	endpoint := fmt.Sprintf("/project/%s/properties/jirametadata", projectKey)
+
+	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		// Property not set for this project - no billable sub-tasks
+		return []string{}, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get project property failed: %d %s", resp.StatusCode, body)
+	}
+
+	var prop struct {
+		Value struct {
+			BillableSubtasks []string `json:"billable_subtasks"`
+		} `json:"value"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&prop); err != nil {
+		return nil, err
+	}
+
+	if prop.Value.BillableSubtasks == nil {
+		return []string{}, nil
+	}
+
+	return prop.Value.BillableSubtasks, nil
+}
+
+// GetProjectBillableSubtasksCached is GetProjectBillableSubtasks with a
+// site-level cache (project properties change rarely)
+func (c *JiraClient) GetProjectBillableSubtasksCached(ctx context.Context, projectKey string) ([]string, error) {
+	if ids, ok := cache.GetProjectSubtasks(c.cloudID, projectKey); ok {
+		return ids, nil
+	}
+
+	ids, err := c.GetProjectBillableSubtasks(ctx, projectKey)
+	if err != nil {
+		return nil, err
+	}
+	cache.SetProjectSubtasks(c.cloudID, projectKey, ids)
+
+	return ids, nil
+}
+
+// GetIssueTypeNamesCached is GetIssueTypeNames with a site-level cache
+func (c *JiraClient) GetIssueTypeNamesCached(ctx context.Context) (map[string]string, error) {
+	if names, ok := cache.GetIssueTypes(c.cloudID); ok {
+		return names, nil
+	}
+
+	names, err := c.GetIssueTypeNames(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cache.SetIssueTypes(c.cloudID, names)
+
+	return names, nil
+}
+
+// GetProjectIssueTypes returns the issue types that can be created in a
+// project (from createmeta - respects the project's issue type scheme)
+func (c *JiraClient) GetProjectIssueTypes(ctx context.Context, projectKey string) ([]JiraIssueType, error) {
+	endpoint := fmt.Sprintf("/issue/createmeta/%s/issuetypes?maxResults=200", projectKey)
+
+	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get project issue types failed: %d %s", resp.StatusCode, body)
+	}
+
+	var meta struct {
+		IssueTypes []JiraIssueType `json:"issueTypes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		return nil, err
+	}
+
+	return meta.IssueTypes, nil
+}
+
+// GetProjectIssueTypesCached is GetProjectIssueTypes with a site-level cache
+func (c *JiraClient) GetProjectIssueTypesCached(ctx context.Context, projectKey string) ([]JiraIssueType, error) {
+	if types, ok := cache.GetProjectIssueTypes(c.cloudID, projectKey); ok {
+		return types, nil
+	}
+
+	types, err := c.GetProjectIssueTypes(ctx, projectKey)
+	if err != nil {
+		return nil, err
+	}
+	cache.SetProjectIssueTypes(c.cloudID, projectKey, types)
+
+	return types, nil
+}
+
+// GetBillableSubtaskTypes resolves the billable_subtasks project property into
+// sub-task types that are actually creatable in the project. The configured
+// IDs are matched against the project's issue type scheme by ID first, then by
+// name - team-managed (next-gen) projects have their own per-project type IDs,
+// so a same-named sub-task type still maps correctly. Configured types with no
+// match in the project are omitted.
+func (c *JiraClient) GetBillableSubtaskTypes(ctx context.Context, projectKey string) ([]SubtaskType, error) {
+	ids, err := c.GetProjectBillableSubtasksCached(ctx, projectKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return []SubtaskType{}, nil
+	}
+
+	projectTypes, err := c.GetProjectIssueTypesCached(ctx, projectKey)
+	if err != nil {
+		return nil, err
+	}
+
+	globalNames, err := c.GetIssueTypeNamesCached(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := []SubtaskType{}
+	seen := make(map[string]bool)
+	for _, id := range ids {
+		var match *JiraIssueType
+
+		for i, pt := range projectTypes {
+			if pt.Subtask && pt.ID == id {
+				match = &projectTypes[i]
+				break
+			}
+		}
+
+		if match == nil {
+			// Fall back to matching the configured type's name against the
+			// project's sub-task types
+			name := globalNames[id]
+			if name == "" {
+				continue
+			}
+			for i, pt := range projectTypes {
+				if pt.Subtask && strings.EqualFold(pt.Name, name) {
+					match = &projectTypes[i]
+					break
+				}
+			}
+		}
+
+		if match == nil || seen[match.ID] {
+			continue
+		}
+		seen[match.ID] = true
+		result = append(result, SubtaskType{ID: match.ID, Name: match.Name})
+	}
+
+	return result, nil
+}
+
+// subtaskTypeByID returns the type with the given ID, or nil
+func subtaskTypeByID(types []SubtaskType, id string) *SubtaskType {
+	for i := range types {
+		if types[i].ID == id {
+			return &types[i]
+		}
+	}
+	return nil
+}
+
+// GetIssueTypeNames returns a map of issue type ID -> name for the Jira site
+func (c *JiraClient) GetIssueTypeNames(ctx context.Context) (map[string]string, error) {
+	resp, err := c.doRequest(ctx, "GET", "/issuetype", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get issue types failed: %d %s", resp.StatusCode, body)
+	}
+
+	var issueTypes []JiraIssueType
+	if err := json.NewDecoder(resp.Body).Decode(&issueTypes); err != nil {
+		return nil, err
+	}
+
+	names := make(map[string]string, len(issueTypes))
+	for _, t := range issueTypes {
+		names[t.ID] = t.Name
+	}
+
+	return names, nil
+}
+
+// GetIssueDetail fetches a single issue with hierarchy fields (issue type, parent, sub-tasks)
+func (c *JiraClient) GetIssueDetail(ctx context.Context, issueKey string) (*JiraIssueDetail, error) {
+	endpoint := fmt.Sprintf("/issue/%s?fields=summary,project,issuetype,parent,subtasks", issueKey)
+
+	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get issue failed: %d %s", resp.StatusCode, body)
+	}
+
+	var detail JiraIssueDetail
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		return nil, err
+	}
+
+	return &detail, nil
+}
+
+// CreateSubtask creates a sub-task of the given issue type under a parent issue
+// and returns its key
+func (c *JiraClient) CreateSubtask(ctx context.Context, projectID, parentKey, issueTypeID, summary string) (string, error) {
+	body := map[string]interface{}{
+		"fields": map[string]interface{}{
+			"project":   map[string]string{"id": projectID},
+			"parent":    map[string]string{"key": parentKey},
+			"issuetype": map[string]string{"id": issueTypeID},
+			"summary":   summary,
+		},
+	}
+
+	resp, err := c.doRequest(ctx, "POST", "/issue", body)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("create sub-task failed: %d %s", resp.StatusCode, respBody)
+	}
+
+	var created struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		return "", err
+	}
+
+	return created.Key, nil
 }
 
 

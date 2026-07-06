@@ -31,6 +31,7 @@ func main() {
 	mux.HandleFunc("/api/events/", requireAuth(handleEventByID))
 	mux.HandleFunc("/api/issues", requireAuth(handleGetIssues))
 	mux.HandleFunc("/api/issues/search", requireAuth(handleSearchIssues))
+	mux.HandleFunc("/api/issues/", requireAuth(handleIssueByKey))
 	mux.HandleFunc("/api/hours", requireAuth(handleGetHours))
 	mux.HandleFunc("/api/refresh", requireAuth(handleRefresh))
 	mux.HandleFunc("/api/user", requireAuth(handleGetUser))
@@ -123,6 +124,20 @@ func handleEventByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func handleIssueByKey(w http.ResponseWriter, r *http.Request) {
+	// Routes /api/issues/{key}/subtask-options ("/api/issues/search" is
+	// registered separately and takes precedence as the longer pattern)
+	path := strings.TrimPrefix(r.URL.Path, "/api/issues/")
+	parts := strings.Split(path, "/")
+
+	if len(parts) == 2 && parts[1] == "subtask-options" && r.Method == http.MethodGet {
+		handleSubtaskOptions(w, r, parts[0])
+		return
+	}
+
+	http.NotFound(w, r)
 }
 
 func handleImpersonateRoute(w http.ResponseWriter, r *http.Request) {

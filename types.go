@@ -46,6 +46,10 @@ type CalendarEvent struct {
 	WorklogID     string    `json:"worklog_id"`
 	Description   string    `json:"description,omitempty"`
 	FromJiraTime  bool      `json:"from_jiratime"`
+	// Set when the worklog lives on a billable sub-task (see billable_subtasks project property)
+	ParentKey       string `json:"parent_key,omitempty"`
+	SubtaskTypeID   string `json:"subtask_type_id,omitempty"`
+	SubtaskTypeName string `json:"subtask_type_name,omitempty"`
 }
 
 // CreateEventReq is the request body for creating a worklog
@@ -54,6 +58,10 @@ type CreateEventReq struct {
 	Start       string `json:"start"` // ISO 8601 format
 	DurationMin int    `json:"duration_min"`
 	Description string `json:"description,omitempty"`
+	// Optional billable sub-task association: log against a specific existing
+	// sub-task, or get-or-create a sub-task of the given type under IssueKey
+	SubtaskKey    string `json:"subtask_key,omitempty"`
+	SubtaskTypeID string `json:"subtask_type_id,omitempty"`
 }
 
 // UpdateEventReq is the request body for updating a worklog
@@ -61,6 +69,38 @@ type UpdateEventReq struct {
 	Start       string `json:"start,omitempty"` // ISO 8601 format
 	DurationMin int    `json:"duration_min,omitempty"`
 	Description string `json:"description,omitempty"`
+	// Sub-task association, only honoured when ParentKey is set (dialog saves).
+	// Drag/resize updates omit ParentKey and keep the worklog where it is.
+	ParentKey     string `json:"parent_key,omitempty"`
+	SubtaskKey    string `json:"subtask_key,omitempty"`
+	SubtaskTypeID string `json:"subtask_type_id,omitempty"`
+}
+
+// SubtaskType is a billable sub-task issue type configured for a project
+type SubtaskType struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// SubtaskInfo is an existing sub-task under a parent issue
+type SubtaskInfo struct {
+	Key     string `json:"key"`
+	Summary string `json:"summary"`
+	TypeID  string `json:"type_id"`
+	Status  string `json:"status"`
+}
+
+// SubtaskOptionsRes is the response for GET /api/issues/{key}/subtask-options.
+// If the requested issue is itself a billable sub-task, it is resolved to its
+// parent and CurrentTypeID/CurrentSubtask reflect the existing association.
+type SubtaskOptionsRes struct {
+	IssueKey       string        `json:"issue_key"`
+	IssueSummary   string        `json:"issue_summary"`
+	IssueTitle     string        `json:"issue_title"`
+	BillableTypes  []SubtaskType `json:"billable_types"`
+	Subtasks       []SubtaskInfo `json:"subtasks"`
+	CurrentTypeID  string        `json:"current_type_id,omitempty"`
+	CurrentSubtask string        `json:"current_subtask,omitempty"`
 }
 
 // HoursSummary represents weekly hours tracking
@@ -104,8 +144,60 @@ type JiraIssueSearchResponse struct {
 				Key  string `json:"key"`
 				Name string `json:"name"`
 			} `json:"project"`
+			IssueType JiraIssueTypeRef `json:"issuetype"`
+			Parent    *JiraParentRef   `json:"parent,omitempty"`
 		} `json:"fields"`
 	} `json:"issues"`
+}
+
+// JiraIssueTypeRef is an issue type reference as returned in issue fields
+type JiraIssueTypeRef struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Subtask bool   `json:"subtask"`
+}
+
+// JiraParentRef is a parent issue reference as returned in issue fields
+type JiraParentRef struct {
+	ID     string `json:"id"`
+	Key    string `json:"key"`
+	Fields struct {
+		Summary string `json:"summary"`
+	} `json:"fields"`
+}
+
+// JiraIssueDetail is a single issue fetched with hierarchy fields
+type JiraIssueDetail struct {
+	ID     string `json:"id"`
+	Key    string `json:"key"`
+	Fields struct {
+		Summary string `json:"summary"`
+		Project struct {
+			ID   string `json:"id"`
+			Key  string `json:"key"`
+			Name string `json:"name"`
+		} `json:"project"`
+		IssueType JiraIssueTypeRef `json:"issuetype"`
+		Parent    *JiraParentRef   `json:"parent,omitempty"`
+		Subtasks  []struct {
+			ID     string `json:"id"`
+			Key    string `json:"key"`
+			Fields struct {
+				Summary string `json:"summary"`
+				Status  struct {
+					Name string `json:"name"`
+				} `json:"status"`
+				IssueType JiraIssueTypeRef `json:"issuetype"`
+			} `json:"fields"`
+		} `json:"subtasks"`
+	} `json:"fields"`
+}
+
+// JiraIssueType is an entry from the /issuetype endpoint
+type JiraIssueType struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Subtask bool   `json:"subtask"`
 }
 
 type JiraWorklog struct {

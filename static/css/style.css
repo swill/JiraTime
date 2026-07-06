@@ -491,6 +491,137 @@ dialog h2 {
     gap: 8px;
 }
 
+/* Billable sub-task selection */
+
+/* The edit dialog is wider than the default so sub-task rows fit on one line */
+#editDialog {
+    max-width: 560px;
+}
+
+/* No component-scoped .hidden rules existed for these elements */
+.subtask-section.hidden,
+.subtask-list.hidden,
+.subtask-hint.hidden {
+    display: none;
+}
+
+.subtask-types {
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    max-height: 260px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: #fafbfc;
+}
+
+.subtask-type {
+    padding: 4px 6px;
+}
+
+.subtask-type + .subtask-type {
+    border-top: 1px solid #eee;
+}
+
+/* .form-group qualifier needed to out-rank the ".form-group label" block rule */
+.form-group .subtask-option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 14px;
+    font-weight: 400;
+    color: #333;
+    margin-bottom: 0;
+    padding: 7px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.15s;
+}
+
+.form-group .subtask-option:hover {
+    background: #e9f2ff;
+}
+
+.form-group .subtask-option input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    flex-shrink: 0;
+    accent-color: #0052cc;
+    cursor: pointer;
+}
+
+.form-group .subtask-option input[type="checkbox"]:disabled {
+    cursor: default;
+}
+
+.form-group .subtask-option:has(input:checked) {
+    background: #deebff;
+}
+
+.form-group .subtask-option:has(input:disabled) {
+    cursor: default;
+}
+
+.form-group .subtask-option:has(input:disabled):hover {
+    background: transparent;
+}
+
+/* Nested list of existing sub-tasks, indented with a guide line */
+.subtask-list {
+    margin: 2px 0 4px 15px;
+    padding-left: 12px;
+    border-left: 2px solid #c5d5f0;
+}
+
+.form-group .subtask-list .subtask-option {
+    font-size: 12px;
+    padding: 5px 8px;
+}
+
+.subtask-item-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.subtask-item-text .subtask-key {
+    font-weight: 600;
+    color: #0052cc;
+    margin-right: 4px;
+}
+
+.subtask-status {
+    font-size: 10px;
+    font-weight: 500;
+    color: #555;
+    background: #e8e8e8;
+    border-radius: 10px;
+    padding: 2px 8px;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+/* "N existing" badge on type rows whose sub-task list is not empty */
+.subtask-count {
+    font-size: 11px;
+    color: #0052cc;
+    background: #deebff;
+    border-radius: 10px;
+    padding: 2px 8px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    margin-left: auto;
+}
+
+.subtask-hint {
+    font-size: 12px;
+    color: #666;
+    margin: 4px 8px 4px;
+    font-style: italic;
+}
+
 /* Buttons */
 .btn {
     padding: 8px 16px;
@@ -1105,4 +1236,56 @@ html[data-theme="dark"] .fc-scroller::-webkit-scrollbar-thumb:hover {
 /* datetime-local native picker icon */
 html[data-theme="dark"] input[type="datetime-local"] {
     color-scheme: dark;
+}
+
+/* Billable sub-task selection - dark theme */
+html[data-theme="dark"] .subtask-types {
+    border-color: #555;
+    background: #2d2d2d;
+}
+
+html[data-theme="dark"] .subtask-type + .subtask-type {
+    border-top-color: #3c3c3c;
+}
+
+html[data-theme="dark"] .form-group .subtask-option {
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .form-group .subtask-option:hover {
+    background: #37414f;
+}
+
+html[data-theme="dark"] .form-group .subtask-option:has(input:disabled):hover {
+    background: transparent;
+}
+
+html[data-theme="dark"] .form-group .subtask-option:has(input:checked) {
+    background: #2d3d55;
+}
+
+html[data-theme="dark"] .form-group .subtask-option input[type="checkbox"] {
+    accent-color: #4d9de0;
+}
+
+html[data-theme="dark"] .subtask-list {
+    border-left-color: #44546d;
+}
+
+html[data-theme="dark"] .subtask-item-text .subtask-key {
+    color: #4d9de0;
+}
+
+html[data-theme="dark"] .subtask-status {
+    background: #3c3c3c;
+    color: #aaa;
+}
+
+html[data-theme="dark"] .subtask-count {
+    background: #2d3d55;
+    color: #4d9de0;
+}
+
+html[data-theme="dark"] .subtask-hint {
+    color: #aaa;
 }
