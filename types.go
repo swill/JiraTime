@@ -37,15 +37,15 @@ type Issue struct {
 
 // CalendarEvent represents a worklog as a calendar event
 type CalendarEvent struct {
-	ID            string    `json:"id"`
-	Title         string    `json:"title"`
-	Start         time.Time `json:"start"`
-	End           time.Time `json:"end"`
-	IssueKey      string    `json:"issue_key"`
-	IssueID       string    `json:"issue_id"`
-	WorklogID     string    `json:"worklog_id"`
-	Description   string    `json:"description,omitempty"`
-	FromJiraTime  bool      `json:"from_jiratime"`
+	ID           string    `json:"id"`
+	Title        string    `json:"title"`
+	Start        time.Time `json:"start"`
+	End          time.Time `json:"end"`
+	IssueKey     string    `json:"issue_key"`
+	IssueID      string    `json:"issue_id"`
+	WorklogID    string    `json:"worklog_id"`
+	Description  string    `json:"description,omitempty"`
+	FromJiraTime bool      `json:"from_jiratime"`
 	// Set when the worklog lives on a billable sub-task (see billable_subtasks project property)
 	ParentKey       string `json:"parent_key,omitempty"`
 	SubtaskTypeID   string `json:"subtask_type_id,omitempty"`
@@ -119,10 +119,10 @@ type IssuesByProject struct {
 // Jira API response types
 
 type JiraUser struct {
-	AccountID   string `json:"accountId"`
-	DisplayName string `json:"displayName"`
+	AccountID    string `json:"accountId"`
+	DisplayName  string `json:"displayName"`
 	EmailAddress string `json:"emailAddress"`
-	AvatarURLs  struct {
+	AvatarURLs   struct {
 		Large string `json:"48x48"`
 	} `json:"avatarUrls"`
 }
@@ -226,3 +226,24 @@ type StoredTokens struct {
 	Tokens map[string]*oauth2.Token `json:"tokens"` // keyed by account_id
 }
 
+// Manager is a user who can view other users' calendars (read-only
+// impersonation). Managers are administered in-app by super users.
+type Manager struct {
+	AccountID   string    `json:"account_id"`
+	DisplayName string    `json:"display_name"`
+	AvatarURL   string    `json:"avatar_url,omitempty"`
+	AddedBy     string    `json:"added_by"` // account ID of the super user who added them
+	AddedAt     time.Time `json:"added_at"`
+}
+
+// StoredManagers holds the manager list for persistence
+type StoredManagers struct {
+	Managers []Manager `json:"managers"`
+}
+
+// ManagerReq is the request body for creating/updating a manager
+type ManagerReq struct {
+	AccountID   string `json:"account_id"`
+	DisplayName string `json:"display_name"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
+}

@@ -18,6 +18,7 @@ var staticFiles embed.FS
 
 func main() {
 	initConfig()
+	initManagers()
 
 	mux := http.NewServeMux()
 
@@ -38,6 +39,8 @@ func main() {
 	mux.HandleFunc("/api/users/search", requireAuth(handleSearchUsers))
 	mux.HandleFunc("/api/impersonate", requireAuth(handleImpersonateRoute))
 	mux.HandleFunc("/api/impersonate/stop", requireAuth(handleStopImpersonate))
+	mux.HandleFunc("/api/managers", requireAuth(handleManagersRoute))
+	mux.HandleFunc("/api/managers/", requireAuth(handleManagerByIDRoute))
 
 	// Static files and main page
 	staticFS, _ := fs.Sub(staticFiles, "static")

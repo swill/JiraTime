@@ -149,6 +149,16 @@
                 <p class="help-text">For overnight ranges, set end time earlier than start time (e.g., 8pm to 6am)</p>
             </div>
 
+            <div class="form-group managers-section hidden" id="managersSection">
+                <label>Managers</label>
+                <p class="help-text">Managers can view other users' calendars in read-only mode. Changes take effect immediately.</p>
+                <div class="manager-search">
+                    <input type="text" id="managerSearch" placeholder="Search users to add as manager..." autocomplete="off">
+                    <div class="manager-search-results hidden" id="managerSearchResults"></div>
+                </div>
+                <div class="manager-list" id="managerList"></div>
+            </div>
+
             <div class="dialog-buttons">
                 <div class="dialog-buttons-right">
                     <button type="button" id="settingsCancelBtn" class="btn btn-secondary">Cancel</button>

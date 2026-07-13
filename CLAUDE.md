@@ -43,7 +43,7 @@ make deploy   # Deploy to remote server (requires __config.sh)
   - `HOURS_TARGET`: Weekly hours target for widget (default: 40)
   - `ACTIVE_ISSUES_WEEKS`: Activity window for Active Issues (default: 4)
   - `DONE_ISSUES_WEEKS`: How long Done issues stay visible (default: 2)
-  - `SUPER_USERS`: List of account IDs that can impersonate other users (default: [])
+  - `SUPER_USERS`: Site administrator account IDs; can impersonate other users and manage Managers in-app (default: [])
 
 ### Code Style Reference
 The `../fitops` and `../timework` projects demonstrate preferred patterns:
@@ -128,16 +128,23 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - `CalendarEvent.FromJiraTime` boolean field indicates the source
 
 ### Manager Impersonation
-- Super users (defined in `SUPER_USERS` config) can view other users' calendars
+- Two roles can view other users' calendars:
+  - **Super users** (defined in `SUPER_USERS` config) are site administrators; they can impersonate and are the only ones who can manage Managers
+  - **Managers** are administered in-app by super users (persisted in `managers.json`, loaded into memory at startup) and get the same impersonation ability
 - View-only mode: all create/update/delete operations are blocked
 - Impersonation state stored in session (`ImpersonatingID`, `ImpersonatingName`)
+- Removing a manager revokes any in-progress impersonation on their next request (checked in `requireAuth`)
 - JQL queries use the impersonated user's account ID instead of `currentUser()`
 - API endpoints:
-  - `GET /api/users/search?q=X` - Search users (super users only)
-  - `POST /api/impersonate` - Start impersonating `{account_id, display_name}`
+  - `GET /api/users/search?q=X` - Search users (super users and managers)
+  - `POST /api/impersonate` - Start impersonating `{account_id, display_name}` (super users and managers)
   - `POST /api/impersonate/stop` - Stop impersonating
+  - `GET /api/managers` - List managers (super users only)
+  - `POST /api/managers` - Add/update a manager `{account_id, display_name, avatar_url}` (super users only)
+  - `DELETE /api/managers/{account_id}` - Remove a manager (super users only)
 - Frontend shows yellow banner with "Viewing as: [Name]" and Stop button
-- `is_super_user` flag returned in `/api/user` response
+- Manager administration lives in the settings dialog (gear icon), visible only to super users
+- `is_super_user`, `is_manager`, and `can_impersonate` flags returned in `/api/user` response
 
 ### Time Range Settings
 - Configurable visible time range for calendar (supports different shifts/timezones)

@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	jiraAuthURL      = "https://auth.atlassian.com/authorize"
-	jiraTokenURL     = "https://auth.atlassian.com/oauth/token"
-	jiraResourceURL  = "https://api.atlassian.com/oauth/token/accessible-resources"
-	tokenFile        = "tokens.json"
-	sessionCookie    = "jiratime_session"
-	accountIDCookie  = "jiratime_account"
+	jiraAuthURL     = "https://auth.atlassian.com/authorize"
+	jiraTokenURL    = "https://auth.atlassian.com/oauth/token"
+	jiraResourceURL = "https://api.atlassian.com/oauth/token/accessible-resources"
+	tokenFile       = "tokens.json"
+	sessionCookie   = "jiratime_session"
+	accountIDCookie = "jiratime_account"
 )
 
 var (
@@ -177,6 +177,15 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
 			}
 			return
+		}
+
+		// Revoke in-flight impersonation if the user's manager/super-user
+		// status was removed since it started (fail closed)
+		if session.ImpersonatingID != "" && !CanImpersonate(session.AccountID) {
+			logrus.Infof("Clearing impersonation for %s: no longer a manager or super user", session.AccountID)
+			session.ImpersonatingID = ""
+			session.ImpersonatingName = ""
+			saveSession(session)
 		}
 
 		// Refresh token if needed

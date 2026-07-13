@@ -401,12 +401,14 @@ func handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]interface{}{
-		"account_id":    session.AccountID,
-		"display_name":  session.DisplayName,
-		"email":         session.Email,
-		"avatar_url":    session.AvatarURL,
-		"site_url":      session.SiteURL,
-		"is_super_user": IsSuperUser(session.AccountID),
+		"account_id":      session.AccountID,
+		"display_name":    session.DisplayName,
+		"email":           session.Email,
+		"avatar_url":      session.AvatarURL,
+		"site_url":        session.SiteURL,
+		"is_super_user":   IsSuperUser(session.AccountID),
+		"is_manager":      IsManager(session.AccountID),
+		"can_impersonate": CanImpersonate(session.AccountID),
 	}
 
 	// Include impersonation info if active
@@ -425,8 +427,8 @@ func handleSearchUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only super users can search for users to impersonate
-	if !IsSuperUser(session.AccountID) {
+	// Only super users and managers can search for users to impersonate
+	if !CanImpersonate(session.AccountID) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -471,8 +473,8 @@ func handleImpersonate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only super users can impersonate
-	if !IsSuperUser(session.AccountID) {
+	// Only super users and managers can impersonate
+	if !CanImpersonate(session.AccountID) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}

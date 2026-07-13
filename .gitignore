@@ -7,9 +7,10 @@ config.toml
 config.prod.toml
 __config.sh
 
-# Token and session storage
+# Token, session, and manager storage
 tokens.json
 sessions.json
+managers.json
 
 # Let's Encrypt certificates
 certs/

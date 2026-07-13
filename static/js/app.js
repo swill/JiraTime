@@ -879,8 +879,20 @@
         // Open settings dialog
         settingsBtn.addEventListener('click', () => {
             loadSettingsIntoForm();
+
+            // Manager administration is only shown to super users
+            const managersSection = document.getElementById('managersSection');
+            if (currentUser && currentUser.is_super_user) {
+                managersSection.classList.remove('hidden');
+                loadManagerList();
+            } else {
+                managersSection.classList.add('hidden');
+            }
+
             settingsDialog.showModal();
         });
+
+        initManagersUI();
 
         // Handle preset change
         presetSelect.addEventListener('change', () => {
@@ -919,6 +931,173 @@
             calendar.setOption('slotMinTime', timeRange.slotMinTime);
             calendar.setOption('slotMaxTime', timeRange.slotMaxTime);
         });
+    }
+
+    // Manager Administration (settings dialog, super users only)
+    let managerSearchTimeout = null;
+
+    function initManagersUI() {
+        const searchInput = document.getElementById('managerSearch');
+        const resultsContainer = document.getElementById('managerSearchResults');
+
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+
+            if (managerSearchTimeout) {
+                clearTimeout(managerSearchTimeout);
+            }
+
+            if (query.length < 2) {
+                resultsContainer.classList.add('hidden');
+                return;
+            }
+
+            managerSearchTimeout = setTimeout(async () => {
+                try {
+                    const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`);
+                    if (response.ok) {
+                        renderManagerSearchResults(await response.json());
+                    }
+                } catch (error) {
+                    console.error('Error searching users:', error);
+                }
+            }, 300);
+        });
+
+        // Close results when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!searchInput.contains(e.target) && !resultsContainer.contains(e.target)) {
+                resultsContainer.classList.add('hidden');
+            }
+        });
+    }
+
+    async function loadManagerList() {
+        try {
+            const response = await fetch('/api/managers');
+            if (!response.ok) {
+                throw new Error('Failed to fetch managers');
+            }
+            renderManagerList(await response.json() || []);
+        } catch (error) {
+            console.error('Error loading managers:', error);
+        }
+    }
+
+    function renderManagerList(managers) {
+        const container = document.getElementById('managerList');
+        container.innerHTML = '';
+
+        if (managers.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'help-text';
+            empty.textContent = 'No managers yet. Search above to add one.';
+            container.appendChild(empty);
+            return;
+        }
+
+        managers.forEach(manager => {
+            const item = document.createElement('div');
+            item.className = 'manager-item';
+
+            if (manager.avatar_url) {
+                const avatar = document.createElement('img');
+                avatar.src = manager.avatar_url;
+                avatar.alt = '';
+                item.appendChild(avatar);
+            }
+
+            const name = document.createElement('span');
+            name.className = 'manager-name';
+            name.textContent = manager.display_name;
+            item.appendChild(name);
+
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'btn btn-small btn-danger';
+            removeBtn.textContent = 'Remove';
+            removeBtn.addEventListener('click', () => removeManager(manager));
+            item.appendChild(removeBtn);
+
+            container.appendChild(item);
+        });
+    }
+
+    function renderManagerSearchResults(users) {
+        const container = document.getElementById('managerSearchResults');
+        container.innerHTML = '';
+
+        if (!users || users.length === 0) {
+            container.classList.add('hidden');
+            return;
+        }
+
+        users.forEach(user => {
+            const item = document.createElement('div');
+            item.className = 'manager-user-item';
+
+            const avatar = document.createElement('img');
+            avatar.src = user.avatar_url;
+            avatar.alt = '';
+            item.appendChild(avatar);
+
+            const name = document.createElement('span');
+            name.textContent = user.display_name;
+            item.appendChild(name);
+
+            item.addEventListener('click', () => addManager(user));
+            container.appendChild(item);
+        });
+
+        container.classList.remove('hidden');
+    }
+
+    async function addManager(user) {
+        document.getElementById('managerSearch').value = '';
+        document.getElementById('managerSearchResults').classList.add('hidden');
+
+        try {
+            const response = await fetch('/api/managers', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    account_id: user.account_id,
+                    display_name: user.display_name,
+                    avatar_url: user.avatar_url
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to add manager');
+            }
+
+            await loadManagerList();
+        } catch (error) {
+            console.error('Error adding manager:', error);
+            alert('Failed to add manager');
+        }
+    }
+
+    async function removeManager(manager) {
+        if (!confirm(`Remove ${manager.display_name} as a manager?`)) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/managers/${encodeURIComponent(manager.account_id)}`, {
+                method: 'DELETE'
+            });
+
+            // 404 means it was already removed - refreshing the list is enough
+            if (!response.ok && response.status !== 404) {
+                throw new Error('Failed to remove manager');
+            }
+
+            await loadManagerList();
+        } catch (error) {
+            console.error('Error removing manager:', error);
+            alert('Failed to remove manager');
+        }
     }
 
     // Sidebar Functions
@@ -982,8 +1161,8 @@
             impersonationBar.classList.add('hidden');
             container.classList.remove('view-only-mode');
 
-            // Show impersonate controls for super users only
-            if (currentUser.is_super_user) {
+            // Show impersonate controls for super users and managers
+            if (currentUser.can_impersonate) {
                 impersonateControls.classList.remove('hidden');
                 initImpersonationSearch();
             } else {

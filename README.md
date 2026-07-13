@@ -14,7 +14,7 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
 - **Search**: Filter sidebar issues and search all Jira issues
 - **Source Tracking**: Visual indicator distinguishes JiraTime entries from those created in Jira/JSM
 - **Billable Sub-tasks**: Log time against configured sub-task types (via the JiraMetadata app's `billable_subtasks` project property)
-- **Manager Impersonation**: Super users can view team members' calendars in read-only mode
+- **Manager Impersonation**: Managers (administered in-app by super users) can view team members' calendars in read-only mode
 - **Configurable Time Range**: Adjust visible hours for different shifts (day, night, custom)
 - **Recent Issues**: Quick access to your 5 most recently used issues
 - **External Links**: Click the link icon on any issue to open it in Jira
@@ -257,17 +257,22 @@ Projects without `billable_subtasks` behave exactly as before — dragging creat
 
 ### Manager Impersonation
 
-Super users (managers) can view team members' calendars in read-only mode to review time entries without logging in as that user.
+Managers and super users can view team members' calendars in read-only mode to review time entries without logging in as that user.
+
+There are two roles:
+- **Super users** are site administrators defined in `config.toml` (`SUPER_USERS`). They can impersonate other users and are the only ones who can manage the Manager list.
+- **Managers** are administered inside the app by super users and get the same read-only impersonation ability. The list is persisted in `managers.json` next to the binary.
 
 **Setup:**
-1. Add account IDs to the `SUPER_USERS` list in `config.toml`:
+1. Add super user account IDs to the `SUPER_USERS` list in `config.toml`:
    ```toml
    SUPER_USERS = ["5a1234567890abcdef123456", "5b1234567890abcdef123456"]
    ```
-2. To find your account ID, check the `/api/user` endpoint while logged in
+   To find your account ID, check the `/api/user` endpoint while logged in.
+2. As a super user, open Settings (gear icon ⚙ in the sidebar footer) and use the **Managers** section to add or remove managers. Changes take effect immediately — removing a manager also ends any impersonation they have in progress.
 
 **Usage:**
-1. Super users see a "Search users to impersonate..." field below their name
+1. Managers and super users see a "Search users to impersonate..." field below their name
 2. Search for a team member by name
 3. Click their name to view their calendar
 4. A yellow banner shows "Viewing as: [Name]" with a Stop button
@@ -308,7 +313,7 @@ Overnight ranges (where end time is before start time) are fully supported. Sett
 | `HOURS_TARGET` | No | 40 | Weekly hours target for the widget |
 | `ACTIVE_ISSUES_WEEKS` | No | 4 | Weeks of activity for Active Issues filter |
 | `DONE_ISSUES_WEEKS` | No | 2 | Weeks that Done issues remain visible |
-| `SUPER_USERS` | No | [] | List of account IDs that can impersonate other users |
+| `SUPER_USERS` | No | [] | Site administrator account IDs: can impersonate other users and manage Managers in-app |
 
 Environment variables can override config file values (e.g., `JIRA_CLIENT_ID=xxx ./jiratime`).
 
@@ -375,9 +380,12 @@ jiratime/
 | GET | `/api/hours?week=X` | Get weekly hours summary |
 | POST | `/api/refresh` | Force cache refresh |
 | GET | `/api/user` | Get current user info |
-| GET | `/api/users/search?q=X` | Search users (super users only) |
-| POST | `/api/impersonate` | Start impersonating a user (super users only) |
+| GET | `/api/users/search?q=X` | Search users (super users and managers) |
+| POST | `/api/impersonate` | Start impersonating a user (super users and managers) |
 | POST | `/api/impersonate/stop` | Stop impersonating |
+| GET | `/api/managers` | List managers (super users only) |
+| POST | `/api/managers` | Add or update a manager (super users only) |
+| DELETE | `/api/managers/{account_id}` | Remove a manager (super users only) |
 
 ## Troubleshooting
 
