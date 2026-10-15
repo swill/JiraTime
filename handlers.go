@@ -525,9 +525,10 @@ func handleStopImpersonate(w http.ResponseWriter, r *http.Request) {
 // contain digits and underscores after the first letter)
 var issueKeyPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
 
-// handleSubtaskOptions returns the billable sub-task choices for an issue.
-// If the issue is itself a billable sub-task, it is resolved to its parent and
-// the current association is reported so the edit dialog can pre-check it.
+// handleSubtaskOptions returns the configured sub-task choices for an issue
+// (billable or non-billable, per the project's mode). If the issue is itself a
+// configured sub-task, it is resolved to its parent and the current association
+// is reported so the edit dialog can pre-check it.
 func handleSubtaskOptions(w http.ResponseWriter, r *http.Request, issueKey string) {
 	session := getSessionFromRequest(r)
 	if session == nil {
@@ -550,18 +551,19 @@ func handleSubtaskOptions(w http.ResponseWriter, r *http.Request, issueKey strin
 	}
 
 	res := SubtaskOptionsRes{
-		BillableTypes: []SubtaskType{},
-		Subtasks:      []SubtaskInfo{},
+		SubtaskTypes: []SubtaskType{},
+		Subtasks:     []SubtaskInfo{},
 	}
 
-	billableTypes, err := client.GetBillableSubtaskTypes(r.Context(), detail.Fields.Project.Key)
+	configuredTypes, mode, err := client.GetConfiguredSubtaskTypes(r.Context(), detail.Fields.Project.Key)
 	if err != nil {
-		logrus.Warnf("Failed to resolve billable sub-task types for project %s: %v", detail.Fields.Project.Key, err)
-		billableTypes = []SubtaskType{}
+		logrus.Warnf("Failed to resolve sub-task types for project %s: %v", detail.Fields.Project.Key, err)
+		configuredTypes = []SubtaskType{}
+		mode = ""
 	}
 
-	// A billable sub-task resolves to its parent with the association pre-set
-	if detail.Fields.IssueType.Subtask && detail.Fields.Parent != nil && subtaskTypeByID(billableTypes, detail.Fields.IssueType.ID) != nil {
+	// A configured sub-task resolves to its parent with the association pre-set
+	if detail.Fields.IssueType.Subtask && detail.Fields.Parent != nil && subtaskTypeByID(configuredTypes, detail.Fields.IssueType.ID) != nil {
 		res.CurrentTypeID = detail.Fields.IssueType.ID
 		res.CurrentSubtask = detail.Key
 
@@ -577,13 +579,14 @@ func handleSubtaskOptions(w http.ResponseWriter, r *http.Request, issueKey strin
 	res.IssueSummary = detail.Fields.Summary
 	res.IssueTitle = fmt.Sprintf("[%s] %s", detail.Key, detail.Fields.Summary)
 
-	// Sub-tasks cannot have sub-tasks of their own, so a non-billable sub-task
-	// gets no checkbox options
-	if len(billableTypes) > 0 && !detail.Fields.IssueType.Subtask {
-		res.BillableTypes = billableTypes
+	// Sub-tasks cannot have sub-tasks of their own, so an issue that is itself a
+	// configured sub-task gets no checkbox options
+	if len(configuredTypes) > 0 && !detail.Fields.IssueType.Subtask {
+		res.SubtaskTypes = configuredTypes
+		res.SubtaskMode = mode
 
 		for _, st := range detail.Fields.Subtasks {
-			if subtaskTypeByID(billableTypes, st.Fields.IssueType.ID) == nil {
+			if subtaskTypeByID(configuredTypes, st.Fields.IssueType.ID) == nil {
 				continue
 			}
 			res.Subtasks = append(res.Subtasks, SubtaskInfo{
@@ -599,8 +602,9 @@ func handleSubtaskOptions(w http.ResponseWriter, r *http.Request, issueKey strin
 }
 
 // resolveWorklogTarget determines which issue a worklog should be logged
-// against: a specific existing sub-task, a get-or-create sub-task of a billable
-// type (named after the type), or the parent issue itself.
+// against: a specific existing sub-task, a get-or-create sub-task of a
+// configured type (named after the type), or the parent issue itself. The
+// configured types are billable or non-billable depending on the project.
 func resolveWorklogTarget(ctx context.Context, client *JiraClient, parentKey, subtaskTypeID, subtaskKey string) (string, error) {
 	if subtaskTypeID == "" && subtaskKey == "" {
 		return parentKey, nil
@@ -611,35 +615,35 @@ func resolveWorklogTarget(ctx context.Context, client *JiraClient, parentKey, su
 		return "", fmt.Errorf("failed to get issue %s: %w", parentKey, err)
 	}
 
-	billableTypes, err := client.GetBillableSubtaskTypes(ctx, detail.Fields.Project.Key)
+	configuredTypes, _, err := client.GetConfiguredSubtaskTypes(ctx, detail.Fields.Project.Key)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve billable sub-task types: %w", err)
+		return "", fmt.Errorf("failed to resolve sub-task types: %w", err)
 	}
 
 	// Specific existing sub-task chosen - verify it belongs to the parent and
-	// is a billable type before trusting the client-supplied key
+	// is a configured type before trusting the client-supplied key
 	if subtaskKey != "" {
 		for _, st := range detail.Fields.Subtasks {
-			if st.Key == subtaskKey && subtaskTypeByID(billableTypes, st.Fields.IssueType.ID) != nil {
+			if st.Key == subtaskKey && subtaskTypeByID(configuredTypes, st.Fields.IssueType.ID) != nil {
 				return subtaskKey, nil
 			}
 		}
-		return "", fmt.Errorf("sub-task %s is not a billable sub-task of %s", subtaskKey, parentKey)
+		return "", fmt.Errorf("sub-task %s is not a configured sub-task of %s", subtaskKey, parentKey)
 	}
 
 	// Type-only selection: reuse the sub-task named after the type, or create it
-	billableType := subtaskTypeByID(billableTypes, subtaskTypeID)
-	if billableType == nil {
+	configuredType := subtaskTypeByID(configuredTypes, subtaskTypeID)
+	if configuredType == nil {
 		return "", fmt.Errorf("sub-task type %s is not available in project %s", subtaskTypeID, detail.Fields.Project.Key)
 	}
 
 	for _, st := range detail.Fields.Subtasks {
-		if st.Fields.IssueType.ID == billableType.ID && strings.EqualFold(st.Fields.Summary, billableType.Name) {
+		if st.Fields.IssueType.ID == configuredType.ID && strings.EqualFold(st.Fields.Summary, configuredType.Name) {
 			return st.Key, nil
 		}
 	}
 
-	newKey, err := client.CreateSubtask(ctx, detail.Fields.Project.ID, parentKey, billableType.ID, billableType.Name)
+	newKey, err := client.CreateSubtask(ctx, detail.Fields.Project.ID, parentKey, configuredType.ID, configuredType.Name)
 	if err != nil {
 		return "", fmt.Errorf("failed to create sub-task: %w", err)
 	}

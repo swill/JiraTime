@@ -46,7 +46,8 @@ type CalendarEvent struct {
 	WorklogID    string    `json:"worklog_id"`
 	Description  string    `json:"description,omitempty"`
 	FromJiraTime bool      `json:"from_jiratime"`
-	// Set when the worklog lives on a billable sub-task (see billable_subtasks project property)
+	// Set when the worklog lives on a configured sub-task (see the
+	// billable_subtasks / non_billable_subtasks project properties)
 	ParentKey       string `json:"parent_key,omitempty"`
 	SubtaskTypeID   string `json:"subtask_type_id,omitempty"`
 	SubtaskTypeName string `json:"subtask_type_name,omitempty"`
@@ -76,7 +77,25 @@ type UpdateEventReq struct {
 	SubtaskTypeID string `json:"subtask_type_id,omitempty"`
 }
 
-// SubtaskType is a billable sub-task issue type configured for a project
+// Sub-task configuration modes. A project configures either billable sub-tasks
+// (on a non-billable project, so logged time is reclassified as billable) or
+// non-billable sub-tasks (on a billable project, so time is reclassified as
+// non-billable). The two are mutually exclusive per project.
+const (
+	SubtaskModeBillable    = "billable"
+	SubtaskModeNonBillable = "non_billable"
+)
+
+// ProjectSubtaskConfig is the sub-task configuration resolved from a project's
+// jirametadata property: the configured sub-task issue type IDs and the mode
+// (billable vs non-billable) they represent. Mode is empty when none are set.
+type ProjectSubtaskConfig struct {
+	TypeIDs []string
+	Mode    string
+}
+
+// SubtaskType is a sub-task issue type configured for a project (billable or
+// non-billable, per the project's ProjectSubtaskConfig mode)
 type SubtaskType struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -91,13 +110,16 @@ type SubtaskInfo struct {
 }
 
 // SubtaskOptionsRes is the response for GET /api/issues/{key}/subtask-options.
-// If the requested issue is itself a billable sub-task, it is resolved to its
+// If the requested issue is itself a configured sub-task, it is resolved to its
 // parent and CurrentTypeID/CurrentSubtask reflect the existing association.
+// SubtaskMode ("billable" or "non_billable") tells the UI how to label the
+// choices; it is empty when the project has no sub-tasks configured.
 type SubtaskOptionsRes struct {
 	IssueKey       string        `json:"issue_key"`
 	IssueSummary   string        `json:"issue_summary"`
 	IssueTitle     string        `json:"issue_title"`
-	BillableTypes  []SubtaskType `json:"billable_types"`
+	SubtaskMode    string        `json:"subtask_mode,omitempty"`
+	SubtaskTypes   []SubtaskType `json:"subtask_types"`
 	Subtasks       []SubtaskInfo `json:"subtasks"`
 	CurrentTypeID  string        `json:"current_type_id,omitempty"`
 	CurrentSubtask string        `json:"current_subtask,omitempty"`

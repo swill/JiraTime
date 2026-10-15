@@ -369,8 +369,9 @@
     }
 
     // Start the create flow for an issue dropped/tapped onto the calendar.
-    // Projects with billable sub-tasks configured open the edit dialog so a
-    // sub-task can be chosen; other projects keep the fast one-step logging.
+    // Projects with sub-tasks configured (billable or non-billable) open the
+    // edit dialog so a sub-task can be chosen; other projects keep the fast
+    // one-step logging.
     async function startCreateFlow(issueKey, issueSummary, start) {
         if (isViewOnlyMode()) {
             alert('Cannot create events while viewing another user\'s calendar');
@@ -387,14 +388,14 @@
             hideLoading();
         }
 
-        if (!options || !options.billable_types || options.billable_types.length === 0) {
-            // No billable sub-tasks configured - create immediately
+        if (!options || !options.subtask_types || options.subtask_types.length === 0) {
+            // No sub-tasks configured - create immediately
             addToRecentIssues(issueKey, issueSummary);
             await createEvent(issueKey, start, 30, '');
             return;
         }
 
-        // A billable sub-task resolves to its parent; track the parent as recent
+        // A configured sub-task resolves to its parent; track the parent as recent
         addToRecentIssues(options.issue_key, options.issue_summary);
         openCreateDialog(options, start);
     }
@@ -639,7 +640,7 @@
         document.getElementById('eventDuration').value = getDurationMinutes(event);
         document.getElementById('eventDescription').value = event.extendedProps.description || '';
 
-        // Load sub-task options; a worklog on a billable sub-task resolves to
+        // Load sub-task options; a worklog on a configured sub-task resolves to
         // its parent with the current association pre-checked (this also covers
         // time entered in Jira/JSM directly)
         dialogSubtaskOptions = null;
@@ -662,7 +663,7 @@
     }
 
     // Open the dialog to create a new entry (used when the issue's project has
-    // billable sub-tasks configured)
+    // billable or non-billable sub-tasks configured)
     function openCreateDialog(options, start) {
         const dialog = document.getElementById('editDialog');
         const title = document.getElementById('dialogTitle');
@@ -688,24 +689,34 @@
         dialog.showModal();
     }
 
-    // Render the billable sub-task checkboxes. Type checkboxes act like
-    // toggleable radios (one at a time); selecting a type reveals its existing
-    // sub-tasks, where at most one can be picked.
+    // Render the configured sub-task checkboxes (billable or non-billable, per
+    // the project's mode). Type checkboxes act like toggleable radios (one at a
+    // time); selecting a type reveals its existing sub-tasks, where at most one
+    // can be picked.
     function renderSubtaskSection(options) {
         const section = document.getElementById('subtaskSection');
+        const label = document.getElementById('subtaskSectionLabel');
         const container = document.getElementById('subtaskTypes');
         container.innerHTML = '';
         selectedSubtaskTypeId = null;
         selectedSubtaskKey = null;
 
-        if (!options || !options.billable_types || options.billable_types.length === 0) {
+        if (!options || !options.subtask_types || options.subtask_types.length === 0) {
             section.classList.add('hidden');
             return;
         }
 
+        // Label the section by mode: billable sub-tasks reclassify time as
+        // billable, non-billable sub-tasks reclassify it as non-billable
+        if (label) {
+            label.textContent = options.subtask_mode === 'non_billable'
+                ? 'Non-billable via Sub-task'
+                : 'Billable via Sub-task';
+        }
+
         const disabled = !!isViewOnlyMode();
 
-        options.billable_types.forEach(type => {
+        options.subtask_types.forEach(type => {
             const typeEl = document.createElement('div');
             typeEl.className = 'subtask-type';
 
@@ -814,7 +825,7 @@
             });
         });
 
-        // Pre-check the current association for existing entries on a billable
+        // Pre-check the current association for existing entries on a configured
         // sub-task (regardless of whether the time was logged here or in Jira)
         if (options.current_type_id) {
             const typeCb = container.querySelector(`.subtask-type-checkbox[data-type-id="${CSS.escape(options.current_type_id)}"]`);

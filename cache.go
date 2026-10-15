@@ -25,15 +25,15 @@ type UserCache struct {
 type Cache struct {
 	users map[string]*UserCache
 	// Site-level caches (shared across users of the same Jira site)
-	projectSubtasks   map[string]*CacheEntry[[]string]        // keyed by "{cloudID}/{projectKey}"
-	projectIssueTypes map[string]*CacheEntry[[]JiraIssueType] // keyed by "{cloudID}/{projectKey}"
-	issueTypes        map[string]*CacheEntry[map[string]string] // keyed by cloudID
+	projectSubtasks   map[string]*CacheEntry[ProjectSubtaskConfig] // keyed by "{cloudID}/{projectKey}"
+	projectIssueTypes map[string]*CacheEntry[[]JiraIssueType]      // keyed by "{cloudID}/{projectKey}"
+	issueTypes        map[string]*CacheEntry[map[string]string]    // keyed by cloudID
 	mu                sync.RWMutex
 }
 
 var cache = &Cache{
 	users:             make(map[string]*UserCache),
-	projectSubtasks:   make(map[string]*CacheEntry[[]string]),
+	projectSubtasks:   make(map[string]*CacheEntry[ProjectSubtaskConfig]),
 	projectIssueTypes: make(map[string]*CacheEntry[[]JiraIssueType]),
 	issueTypes:        make(map[string]*CacheEntry[map[string]string]),
 }
@@ -101,24 +101,24 @@ func (c *Cache) InvalidateAll(accountID string) {
 	delete(c.users, accountID)
 }
 
-func (c *Cache) GetProjectSubtasks(cloudID, projectKey string) ([]string, bool) {
+func (c *Cache) GetProjectSubtaskConfig(cloudID, projectKey string) (ProjectSubtaskConfig, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	entry := c.projectSubtasks[cloudID+"/"+projectKey]
 	if entry == nil || entry.IsExpired() {
-		return nil, false
+		return ProjectSubtaskConfig{}, false
 	}
 
 	return entry.Data, true
 }
 
-func (c *Cache) SetProjectSubtasks(cloudID, projectKey string, ids []string) {
+func (c *Cache) SetProjectSubtaskConfig(cloudID, projectKey string, cfg ProjectSubtaskConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.projectSubtasks[cloudID+"/"+projectKey] = &CacheEntry[[]string]{
-		Data:      ids,
+	c.projectSubtasks[cloudID+"/"+projectKey] = &CacheEntry[ProjectSubtaskConfig]{
+		Data:      cfg,
 		ExpiresAt: time.Now().Add(cacheTTL),
 	}
 }
@@ -168,7 +168,7 @@ func (c *Cache) SetIssueTypes(cloudID string, names map[string]string) {
 }
 
 // InvalidateSite clears site-level caches for a cloud ID (used by manual refresh
-// so billable sub-task config changes are picked up promptly)
+// so sub-task config changes are picked up promptly)
 func (c *Cache) InvalidateSite(cloudID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

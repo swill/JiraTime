@@ -13,7 +13,7 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
 - **Hours Tracking**: Visual widget showing weekly hours vs. target
 - **Search**: Filter sidebar issues and search all Jira issues
 - **Source Tracking**: Visual indicator distinguishes JiraTime entries from those created in Jira/JSM
-- **Billable Sub-tasks**: Log time against configured sub-task types (via the JiraMetadata app's `billable_subtasks` project property)
+- **Billable / Non-billable Sub-tasks**: Reclassify logged time against configured sub-task types (via the JiraMetadata app's `billable_subtasks` / `non_billable_subtasks` project properties)
 - **Manager Impersonation**: Managers (administered in-app by super users) can view team members' calendars in read-only mode
 - **Configurable Time Range**: Adjust visible hours for different shifts (day, night, custom)
 - **Recent Issues**: Quick access to your 5 most recently used issues
@@ -88,7 +88,7 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
 make build
 
 # Or run directly in development mode
-make dev
+make run
 ```
 
 The server will start on the configured port (default: 8080).
@@ -166,7 +166,7 @@ JiraTime includes a `make deploy` command for deploying to a remote Linux server
 2. Drag the issue onto the calendar at the desired time
 3. A 30-minute entry is created automatically
 
-If the issue's project has billable sub-tasks configured (see [Billable Sub-tasks](#billable-sub-tasks)), the edit dialog opens instead so you can choose where the time goes before the entry is created.
+If the issue's project has billable or non-billable sub-tasks configured (see [Billable & Non-billable Sub-tasks](#billable--non-billable-sub-tasks)), the edit dialog opens instead so you can choose where the time goes before the entry is created.
 
 **By Selecting Time:**
 1. Click and drag on the calendar to select a time range
@@ -234,26 +234,45 @@ Calendar events show a visual indicator to distinguish their origin:
 
 This helps identify which entries were logged through JiraTime vs. native Jira interfaces.
 
-### Billable Sub-tasks
+### Billable & Non-billable Sub-tasks
 
-Projects can define billable sub-task types using the companion [JiraMetadata](../jirametadata) Forge app, which stores them in the `jirametadata` project property:
+Projects can define sub-task types that **reclassify** logged time, using the companion [JiraMetadata](../jirametadata) Forge app, which stores them in the `jirametadata` project property. There are two mirror-image modes:
+
+| Mode | Property field | Configured on | Effect of logging time to the sub-task |
+|------|----------------|---------------|----------------------------------------|
+| **Billable sub-tasks** | `billable_subtasks` | a **non-billable** project | time is reclassified as **billable** |
+| **Non-billable sub-tasks** | `non_billable_subtasks` | a **billable** project | time is reclassified as **non-billable** |
 
 ```
 GET /rest/api/3/project/{key}/properties/jirametadata
-{"key":"jirametadata","value":{"billable_subtasks":["11457","11490","11491"]}}
+{"key":"jirametadata","value":{"billable":false,"billable_subtasks":["11457","11490"]}}
+{"key":"jirametadata","value":{"billable":true,"non_billable_subtasks":["11492","11493"]}}
 ```
 
-The IDs are sub-task issue type IDs. When a project has them configured:
+A project is billable *or* non-billable, so it uses one mode or the other — never both. The values are sub-task issue type IDs. When a project has either field configured, the behaviour is identical apart from the dialog label ("Billable via Sub-task" vs "Non-billable via Sub-task"):
 
 - **Creating an entry** (drag or tap) opens the edit dialog with a checkbox per configured sub-task type. Only one type can be selected at a time, and a checkbox can be unticked again.
 - Selecting a type reveals the parent issue's **existing sub-tasks of that type** (all statuses, shown with a status badge). Ticking one logs the time against that specific sub-task's worklog.
-- If a type is selected but no specific sub-task is ticked, the time goes to a sub-task **named after the type** (e.g. a "Billable Work" sub-task) — reused if it already exists under the parent, created if not.
+- If a type is selected but no specific sub-task is ticked, the time goes to a sub-task **named after the type** (e.g. a "Non-billable Work" sub-task) — reused if it already exists under the parent, created if not.
 - If no type is selected, the time is logged against the parent issue as before.
-- Calendar events whose worklog lives on a billable sub-task are titled with the **parent issue plus the type** (e.g. `[PROJ-12] Fix login • Billable Work`), and reopening them shows the association pre-checked — including time logged directly in Jira/JSM on such a sub-task.
+- Calendar events whose worklog lives on a configured sub-task are titled with the **parent issue plus the type** (e.g. `[PROJ-12] Fix login • Non-billable Work`), and reopening them shows the association pre-checked — including time logged directly in Jira/JSM on such a sub-task.
 - Changing the checkboxes on an existing entry **moves** the worklog (to the parent when unticked, or to the selected sub-task). Because Jira has no worklog-move API, this is done as create-then-delete: the copy is created first and rolled back if the delete fails, so time is never lost or double-counted. A moved entry counts as JiraTime-created (solid border), even if it was originally logged in Jira.
-- Dragging a billable sub-task itself from the sidebar resolves it to its parent, with the sub-task pre-checked in the dialog.
+- Dragging a configured sub-task itself from the sidebar resolves it to its parent, with the sub-task pre-checked in the dialog.
 
-Projects without `billable_subtasks` behave exactly as before — dragging creates the entry immediately and the dialog shows no checkboxes. The property and issue-type lookups are cached for 15 minutes; use the sidebar **Refresh** button to pick up configuration changes immediately.
+Projects with neither field behave exactly as before — dragging creates the entry immediately and the dialog shows no checkboxes. The property and issue-type lookups are cached for 15 minutes; use the sidebar **Refresh** button to pick up configuration changes immediately.
+
+#### Setting up a project's sub-task types (order matters)
+
+The three steps must happen in this order — skipping or reordering the first is the most common reason the checkboxes never appear:
+
+1. **Add the sub-task work item types to the project.** Every type you intend to use (e.g. Pre-sales, Shadowing, Warranty) must exist in the project's Work Item Type scheme. JiraTime only offers types that are actually **creatable in that project**, so a type that isn't in the scheme is silently ignored — even when it's configured in JiraMetadata.
+   - **Company-managed projects:** Project settings → **Work items → Types** → add the sub-task types to the scheme.
+   - **Team-managed projects:** Project settings → **Work types** → add the sub-task types.
+2. **Configure the types in JiraMetadata.** In the project's **Project Metadata** panel, add those types to **Billable Sub-tasks** (on a non-billable project) or **Non-Billable Sub-tasks** (on a billable project). This writes them to the `jirametadata` project property.
+   - The field is a **Sub-Task Types** field. JiraMetadata derives the property key from the field label (lowercased, spaces → underscores, other punctuation dropped), so label it **"Non Billable Subtasks"** to get the key `non_billable_subtasks`. A hyphen is *stripped*, so "Non-Billable Subtasks" becomes `nonbillable_subtasks` — JiraTime accepts that spelling as a fallback, but the canonical key is `non_billable_subtasks`. If both fields happen to be set on one project, the project's `billable` flag decides which one applies.
+3. **Reload in JiraTime.** The type checkboxes then appear in the create/edit dialog. Site config (the project property and issue-type scheme) is cached for 15 minutes, so use the sidebar **Refresh** button to pick up steps 1–2 immediately.
+
+> **Gotcha:** if a type you configured in JiraMetadata doesn't show up in the dialog, it's almost always because it was never added to the project's Work Item Type scheme (step 1). Configuring a type in JiraMetadata does **not** add it to the project.
 
 ### Manager Impersonation
 
@@ -401,6 +420,11 @@ jiratime/
 - Click the "Refresh" button to clear the cache
 - Check browser console for API errors
 - Ensure you have worklogs in the visible date range
+
+### Billable/Non-billable sub-task types don't appear in the dialog
+- The sub-task type must be added to the **project's** Work Item Type scheme first (Project settings → **Work items → Types**, or **Work types** for team-managed projects). Types configured in JiraMetadata but missing from the project's scheme are silently ignored. See [Setting up a project's sub-task types](#setting-up-a-projects-sub-task-types-order-matters).
+- After adding a type, click the sidebar **Refresh** button — the project property and issue-type scheme are cached for 15 minutes.
+- Sub-tasks can't have sub-tasks of their own, so the section never appears when the open issue is itself a sub-task.
 
 ### "ERROR: You can not edit the issue as it is in a non-editable workflow state."
 This error occurs when trying to log time against a Jira issue that is in a closed/terminal workflow state (e.g. Done, Closed, Resolved). There are two options:

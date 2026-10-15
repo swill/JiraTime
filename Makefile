@@ -11,7 +11,7 @@ build:
 	go build -o jiratime .
 
 # Run development server
-dev:
+run:
 	go run .
 
 # Clean build artifacts

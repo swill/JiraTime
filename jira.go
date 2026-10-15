@@ -265,15 +265,16 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 			continue // Skip issues we can't get worklogs for
 		}
 
-		// Detect worklogs living on billable sub-tasks so the calendar can show
-		// them under their parent issue (works for time logged in Jira directly too)
+		// Detect worklogs living on configured sub-tasks (billable or
+		// non-billable) so the calendar can show them under their parent issue
+		// (works for time logged in Jira directly too)
 		title := fmt.Sprintf("[%s] %s", issue.Key, issue.Fields.Summary)
 		parentKey := ""
 		subtaskTypeID := ""
 		subtaskTypeName := ""
 		if issue.Fields.IssueType.Subtask && issue.Fields.Parent != nil {
-			billableTypes, err := c.GetBillableSubtaskTypes(ctx, issue.Fields.Project.Key)
-			if err == nil && subtaskTypeByID(billableTypes, issue.Fields.IssueType.ID) != nil {
+			configuredTypes, _, err := c.GetConfiguredSubtaskTypes(ctx, issue.Fields.Project.Key)
+			if err == nil && subtaskTypeByID(configuredTypes, issue.Fields.IssueType.ID) != nil {
 				parentKey = issue.Fields.Parent.Key
 				subtaskTypeID = issue.Fields.IssueType.ID
 				subtaskTypeName = issue.Fields.IssueType.Name
@@ -483,58 +484,118 @@ func (c *JiraClient) IsWorklogFromJiraTime(ctx context.Context, issueKey, worklo
 	return resp.StatusCode == http.StatusOK
 }
 
-// GetProjectBillableSubtasks returns the sub-task issue type IDs configured for
-// a project in the jirametadata project property (billable_subtasks field).
-// Returns an empty slice when the property is not set.
-func (c *JiraClient) GetProjectBillableSubtasks(ctx context.Context, projectKey string) ([]string, error) {
+// flexBool decodes a JSON boolean that a loosely-coupled metadata source (the
+// jirametadata Forge app is configured per deployment) may instead store as a
+// string ("Yes"/"true"/"1") or a number. Decoding it as a plain bool would fail
+// the whole property parse when the value is anything but a real boolean, which
+// would silently drop every project's sub-task config; this keeps one
+// unexpectedly-typed field from breaking the decode.
+type flexBool bool
+
+func (b *flexBool) UnmarshalJSON(data []byte) error {
+	var boolVal bool
+	if err := json.Unmarshal(data, &boolVal); err == nil {
+		*b = flexBool(boolVal)
+		return nil
+	}
+	var strVal string
+	if err := json.Unmarshal(data, &strVal); err == nil {
+		switch strings.ToLower(strings.TrimSpace(strVal)) {
+		case "yes", "y", "true", "t", "1", "on":
+			*b = true
+		default:
+			*b = false
+		}
+		return nil
+	}
+	var numVal float64
+	if err := json.Unmarshal(data, &numVal); err == nil {
+		*b = numVal != 0
+		return nil
+	}
+	// null or any other shape: treat as false rather than failing the decode
+	*b = false
+	return nil
+}
+
+// GetProjectSubtaskConfig returns the sub-task configuration for a project from
+// its jirametadata project property. A non-billable project may set billable
+// sub-task types (billable_subtasks field); a billable project may set
+// non-billable sub-task types (non_billable_subtasks field, or the hyphen-
+// stripped nonbillable_subtasks alias). The two are mutually exclusive per
+// project, so at most one mode is returned; an empty config means none are set.
+func (c *JiraClient) GetProjectSubtaskConfig(ctx context.Context, projectKey string) (ProjectSubtaskConfig, error) {
 	endpoint := fmt.Sprintf("/project/%s/properties/jirametadata", projectKey)
 
 	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return ProjectSubtaskConfig{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		// Property not set for this project - no billable sub-tasks
-		return []string{}, nil
+		// Property not set for this project - no sub-tasks configured
+		return ProjectSubtaskConfig{}, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get project property failed: %d %s", resp.StatusCode, body)
+		return ProjectSubtaskConfig{}, fmt.Errorf("get project property failed: %d %s", resp.StatusCode, body)
 	}
 
 	var prop struct {
 		Value struct {
-			BillableSubtasks []string `json:"billable_subtasks"`
+			Billable            flexBool `json:"billable"`
+			BillableSubtasks    []string `json:"billable_subtasks"`
+			NonBillableSubtasks []string `json:"non_billable_subtasks"`
+			// Alias for admins who label the field "Non-Billable Subtasks":
+			// JiraMetadata strips the hyphen when deriving the property key
+			NonBillableSubtasksAlt []string `json:"nonbillable_subtasks"`
 		} `json:"value"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&prop); err != nil {
-		return nil, err
+		return ProjectSubtaskConfig{}, err
 	}
 
-	if prop.Value.BillableSubtasks == nil {
-		return []string{}, nil
+	nonBillable := prop.Value.NonBillableSubtasks
+	if len(nonBillable) == 0 {
+		nonBillable = prop.Value.NonBillableSubtasksAlt
 	}
+	hasBillable := len(prop.Value.BillableSubtasks) > 0
+	hasNonBillable := len(nonBillable) > 0
 
-	return prop.Value.BillableSubtasks, nil
+	switch {
+	case hasBillable && hasNonBillable:
+		// Both configured (a project should be one or the other). The project's
+		// billable flag is authoritative: billable projects use non-billable
+		// sub-tasks, non-billable projects use billable sub-tasks.
+		if bool(prop.Value.Billable) {
+			return ProjectSubtaskConfig{TypeIDs: nonBillable, Mode: SubtaskModeNonBillable}, nil
+		}
+		return ProjectSubtaskConfig{TypeIDs: prop.Value.BillableSubtasks, Mode: SubtaskModeBillable}, nil
+	case hasNonBillable:
+		return ProjectSubtaskConfig{TypeIDs: nonBillable, Mode: SubtaskModeNonBillable}, nil
+	case hasBillable:
+		return ProjectSubtaskConfig{TypeIDs: prop.Value.BillableSubtasks, Mode: SubtaskModeBillable}, nil
+	default:
+		return ProjectSubtaskConfig{}, nil
+	}
 }
 
-// GetProjectBillableSubtasksCached is GetProjectBillableSubtasks with a
-// site-level cache (project properties change rarely)
-func (c *JiraClient) GetProjectBillableSubtasksCached(ctx context.Context, projectKey string) ([]string, error) {
-	if ids, ok := cache.GetProjectSubtasks(c.cloudID, projectKey); ok {
-		return ids, nil
+// GetProjectSubtaskConfigCached is GetProjectSubtaskConfig with a site-level
+// cache (project properties change rarely)
+func (c *JiraClient) GetProjectSubtaskConfigCached(ctx context.Context, projectKey string) (ProjectSubtaskConfig, error) {
+	if cfg, ok := cache.GetProjectSubtaskConfig(c.cloudID, projectKey); ok {
+		return cfg, nil
 	}
 
-	ids, err := c.GetProjectBillableSubtasks(ctx, projectKey)
+	cfg, err := c.GetProjectSubtaskConfig(ctx, projectKey)
 	if err != nil {
-		return nil, err
+		return ProjectSubtaskConfig{}, err
 	}
-	cache.SetProjectSubtasks(c.cloudID, projectKey, ids)
+	cache.SetProjectSubtaskConfig(c.cloudID, projectKey, cfg)
 
-	return ids, nil
+	return cfg, nil
 }
 
 // GetIssueTypeNamesCached is GetIssueTypeNames with a site-level cache
@@ -593,34 +654,35 @@ func (c *JiraClient) GetProjectIssueTypesCached(ctx context.Context, projectKey 
 	return types, nil
 }
 
-// GetBillableSubtaskTypes resolves the billable_subtasks project property into
-// sub-task types that are actually creatable in the project. The configured
-// IDs are matched against the project's issue type scheme by ID first, then by
-// name - team-managed (next-gen) projects have their own per-project type IDs,
-// so a same-named sub-task type still maps correctly. Configured types with no
-// match in the project are omitted.
-func (c *JiraClient) GetBillableSubtaskTypes(ctx context.Context, projectKey string) ([]SubtaskType, error) {
-	ids, err := c.GetProjectBillableSubtasksCached(ctx, projectKey)
+// GetConfiguredSubtaskTypes resolves a project's configured sub-task types
+// (billable_subtasks or non_billable_subtasks) into sub-task types that are
+// actually creatable in the project, along with the mode they represent. The
+// configured IDs are matched against the project's issue type scheme by ID
+// first, then by name - team-managed (next-gen) projects have their own
+// per-project type IDs, so a same-named sub-task type still maps correctly.
+// Configured types with no match in the project are omitted.
+func (c *JiraClient) GetConfiguredSubtaskTypes(ctx context.Context, projectKey string) ([]SubtaskType, string, error) {
+	cfg, err := c.GetProjectSubtaskConfigCached(ctx, projectKey)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if len(ids) == 0 {
-		return []SubtaskType{}, nil
+	if len(cfg.TypeIDs) == 0 {
+		return []SubtaskType{}, "", nil
 	}
 
 	projectTypes, err := c.GetProjectIssueTypesCached(ctx, projectKey)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	globalNames, err := c.GetIssueTypeNamesCached(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	result := []SubtaskType{}
 	seen := make(map[string]bool)
-	for _, id := range ids {
+	for _, id := range cfg.TypeIDs {
 		var match *JiraIssueType
 
 		for i, pt := range projectTypes {
@@ -652,7 +714,7 @@ func (c *JiraClient) GetBillableSubtaskTypes(ctx context.Context, projectKey str
 		result = append(result, SubtaskType{ID: match.ID, Name: match.Name})
 	}
 
-	return result, nil
+	return result, cfg.Mode, nil
 }
 
 // subtaskTypeByID returns the type with the given ID, or nil
@@ -746,5 +808,3 @@ func (c *JiraClient) CreateSubtask(ctx context.Context, projectID, parentKey, is
 
 	return created.Key, nil
 }
-
-

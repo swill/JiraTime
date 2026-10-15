@@ -107,18 +107,22 @@ The `../betterwork` codebase is useful for understanding the existing functional
 
 ### Drag-to-Create Behavior
 - When dragging an issue onto the calendar (same for mobile tap-to-create):
-  - If the project has no billable sub-tasks configured: create entry immediately (30-min default)
-  - If the project has billable sub-tasks: open the edit dialog so a sub-task can be chosen
+  - If the project has no configured sub-tasks: create entry immediately (30-min default)
+  - If the project has billable or non-billable sub-tasks: open the edit dialog so a sub-task can be chosen
 - Resizing or moving updates the entry in place (never changes the sub-task association)
 
-### Billable Sub-tasks
-- Projects may define billable sub-task issue type IDs in the `jirametadata` project property (`value.billable_subtasks`), managed by the companion `../jirametadata` Forge app
-- `GET /api/issues/{key}/subtask-options` returns the checkbox choices for the edit dialog; a billable sub-task resolves to its parent with `current_type_id`/`current_subtask` pre-set
+### Billable & Non-billable Sub-tasks
+- Two mirror-image modes reclassify logged time by routing the worklog to a sub-task. Both are stored in the `jirametadata` project property and managed by the companion `../jirametadata` Forge app:
+  - **Billable sub-tasks** (`value.billable_subtasks`): configured on a **non-billable** project; time becomes billable
+  - **Non-billable sub-tasks** (`value.non_billable_subtasks`, or the hyphen-stripped `nonbillable_subtasks` alias): configured on a **billable** project; time becomes non-billable
+- A project uses one mode or the other, never both; if both fields are set, the project's `value.billable` flag decides (billable → non-billable sub-tasks, non-billable → billable sub-tasks). Resolved in `GetProjectSubtaskConfig` (jira.go), which returns the type IDs plus a `Mode` (`SubtaskModeBillable`/`SubtaskModeNonBillable`)
+- The two modes share one code path; the only user-facing difference is the dialog label (`subtask_mode` in the API response drives "Billable via Sub-task" vs "Non-billable via Sub-task")
+- `GET /api/issues/{key}/subtask-options` returns the checkbox choices (`subtask_types`) and `subtask_mode` for the edit dialog; a configured sub-task resolves to its parent with `current_type_id`/`current_subtask` pre-set
 - When configured, drag/tap-to-create opens the edit dialog instead of logging immediately; the dialog shows one checkbox per type (radio-behaving, deselectable) plus a nested list of the parent's existing sub-tasks of the selected type
 - Type selected without a specific sub-task → get-or-create a sub-task named after the type (case-insensitive summary match); no type selected → worklog goes on the parent
 - Worklog target resolution and validation happen server-side (`resolveWorklogTarget` in handlers.go)
 - Changing the association on an existing entry moves the worklog: create on target first, then delete the original, with best-effort rollback on delete failure (Jira has no move API); moved worklogs are marked JiraTime-created
-- Calendar events on billable sub-tasks are titled `[PARENT-KEY] Parent summary • Type Name` and carry `parent_key`/`subtask_type_id`/`subtask_type_name`
+- Calendar events on configured sub-tasks are titled `[PARENT-KEY] Parent summary • Type Name` and carry `parent_key`/`subtask_type_id`/`subtask_type_name`
 - Project property and issue-type lookups are cached site-wide (15 min TTL); the Refresh button also invalidates these via `cache.InvalidateSite`
 
 ### Worklog Source Tracking
