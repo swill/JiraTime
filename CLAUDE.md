@@ -10,6 +10,7 @@ JiraTime is a Go application for calendar-based Jira time tracking. It replaces 
 
 ```bash
 make build    # Build Go binary
+make test     # Run Go unit tests
 make compile  # Cross-compile for Linux/macOS/Windows (outputs to bin/)
 make dev      # Run development server
 make deploy   # Deploy to remote server (requires __config.sh)
@@ -42,7 +43,7 @@ make deploy   # Deploy to remote server (requires __config.sh)
   - `PORT`: HTTP server port (default: 8080)
   - `HOURS_TARGET`: Weekly hours target for widget (default: 40)
   - `ACTIVE_ISSUES_WEEKS`: Activity window for Active Issues (default: 4)
-  - `DONE_ISSUES_WEEKS`: How long Done issues stay visible (default: 2)
+  - `DONE_ISSUES_DAYS`: How long Done issues stay available to log time against (default: 90)
   - `SUPER_USERS`: Site administrator account IDs; can impersonate other users and manage Managers in-app (default: [])
 
 ### Code Style Reference
@@ -61,6 +62,11 @@ The `../fitops` and `../timework` projects demonstrate preferred patterns:
 - `offline_access` scope is added in code to obtain refresh tokens
 - Data hierarchy: Project → Issue → Worklog
 - External links use site URL obtained during OAuth flow
+- One OAuth token per account (`accountTokens` in auth.go), shared by all of a user's sessions/devices; refreshes are serialized per account because Atlassian rotates refresh tokens. Only a rejected refresh token (4xx from the token endpoint) signs the user out; transient failures return 503. Auth cookies slide (renewed on every request, 90 days)
+- JQL searches follow `nextPageToken` (`searchIssues`); read-only calls retry 429/502/503/504 (`doReadRequest`), writes are never retried
+- Worklogs are fetched with `expand=properties` (source marker inline) and `startedAfter`/`startedBefore`; a failed worklog fetch fails the request rather than silently dropping the issue
+- Jira leaves archived projects out of search, so the calendar/hours worklog search sets `includeArchivedProjects` (Active Issues and Search do not: archived issues can't take new time). Entries on archived projects come back with `project_archived` and are read-only in the UI (no move/resize/copy, view-only dialog). Archived status comes from `/project/{key}` (`GetProjectArchivedCached`, site cache); a 404 counts as archived, other lookup errors leave the entry editable. Individually archived issues (Premium) are not returned by search at all
+- FullCalendar is pinned to 6.1.21 (6.1.17+ refreshes the now indicator when a hidden tab becomes visible)
 
 ### Deployment
 - Remote deployment via `make deploy` using Supervisor for process management
@@ -76,6 +82,7 @@ The `../betterwork` codebase is useful for understanding the existing functional
 
 ### Calendar Functionality
 - Day/Week views with 30-minute increments
+- Day/Week choice stored in localStorage (`calendarView`) and kept through window resizes; narrow (mobile) widths force Day view without changing it (`checkMobileView` only acts when crossing the 768px breakpoint)
 - Drag & drop event moving
 - Event resize for duration adjustment
 - Shift+drag to copy events
@@ -91,17 +98,20 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - **Recent Issues:** 5 most recently used issues for quick access (stored in cookie)
 - **Active Issues:** Issues where user is assignee, reporter, or has logged time, organized hierarchically by project
   - Filtered to issues with recent activity (configurable via `ACTIVE_ISSUES_WEEKS`, default 4 weeks)
-  - Done issues remain visible for configurable period (`DONE_ISSUES_WEEKS`, default 2 weeks)
+  - Done issues remain visible for `DONE_ISSUES_DAYS` (default 90), but also need activity within `ACTIVE_ISSUES_WEEKS`, so they leave the sidebar sooner than search
+  - Epic-level issues (`issuetype.hierarchyLevel >= 1`) are excluded (`isEpicLevel` in jira.go)
   - Collapsible project headers
   - Issues displayed as `[PROJECT-123] Issue Title` with external link icon
   - Draggable onto calendar to create time entries (uses FullCalendar external dragging)
 - **Search Results:** Search all Jira issues (not just assigned), returns up to 100 results
+  - Same Done window (`DONE_ISSUES_DAYS`) and Epic exclusion as Active Issues
   - Appears when search query is 2+ characters
   - Uses remaining sidebar space with scrollable list
   - Supports partial matching via JQL wildcards (e.g., "test" matches "testing", "ABC" matches "ABC-123")
 
 ### Hours Tracking Widget
-- Displays current week hours vs. target (e.g., "32/40 hours")
+- Displays current week hours vs. target (e.g., "32/40 hours"), to 2 decimals without trailing zeros ("0.25")
+- Always covers the Monday-Sunday week being viewed, even in Day view; the client sends its local week bounds (`/api/hours?start=&end=`, RFC 3339)
 - Color coding: red when under target, green when met
 - Configurable hours target via `HOURS_TARGET` config (default: 40)
 
@@ -139,6 +149,9 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - Impersonation state stored in session (`ImpersonatingID`, `ImpersonatingName`)
 - Removing a manager revokes any in-progress impersonation on their next request (checked in `requireAuth`)
 - JQL queries use the impersonated user's account ID instead of `currentUser()`
+- Jira filters results by the caller's permissions, so reads scoped to the viewed user's own work (calendar, hours, Active Issues) use the viewed user's saved token (`viewClientFor` in auth.go): managers see exactly what that user sees, including projects the manager can't open in Jira (a deliberate choice). Search, sub-task option lookups and writes keep the viewer's own token
+- If the viewed user has no usable token (never signed in to JiraTime, or their sign-in expired), the viewer's token is used instead and `GET /api/events` sets `X-View-Limited: 1`, which shows a warning under the "Viewing as" bar; limited Active Issues results are not cached
+- Impersonation start/stop is logged (viewer and viewed account IDs)
 - API endpoints:
   - `GET /api/users/search?q=X` - Search users (super users and managers)
   - `POST /api/impersonate` - Start impersonating `{account_id, display_name}` (super users and managers)
@@ -156,7 +169,8 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - Custom option allows arbitrary start/end times
 - Overnight ranges supported (when end < start, end is extended past 24:00 for FullCalendar)
 - Stored in localStorage (`timeRangeSettings` key)
-- Applied dynamically via `calendar.setOption()` without page reload
+- Applied dynamically via `calendar.setOption()` without page reload (`applyTimeRange` in app.js)
+- Auto-expands to include entries in the current view that fall outside the configured hours (FullCalendar does not render events entirely outside `slotMinTime`/`slotMaxTime`); resets when they are no longer in view
 - Gear icon (⚙) in sidebar footer opens settings dialog
 
 ## Design Decisions

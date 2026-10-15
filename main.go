@@ -18,6 +18,7 @@ var staticFiles embed.FS
 
 func main() {
 	initConfig()
+	initTokens()
 	initManagers()
 
 	mux := http.NewServeMux()

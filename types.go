@@ -6,15 +6,15 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// UserSession represents an authenticated user session
+// UserSession represents an authenticated user session. The OAuth token is not
+// held here: it lives in accountTokens, shared by all of the account's sessions.
 type UserSession struct {
-	AccountID   string        `json:"account_id"`
-	CloudID     string        `json:"cloud_id"`
-	SiteURL     string        `json:"site_url"`
-	DisplayName string        `json:"display_name"`
-	Email       string        `json:"email"`
-	AvatarURL   string        `json:"avatar_url"`
-	Token       *oauth2.Token `json:"token"`
+	AccountID   string `json:"account_id"`
+	CloudID     string `json:"cloud_id"`
+	SiteURL     string `json:"site_url"`
+	DisplayName string `json:"display_name"`
+	Email       string `json:"email"`
+	AvatarURL   string `json:"avatar_url"`
 	// Impersonation fields
 	ImpersonatingID   string `json:"impersonating_id,omitempty"`
 	ImpersonatingName string `json:"impersonating_name,omitempty"`
@@ -51,6 +51,9 @@ type CalendarEvent struct {
 	ParentKey       string `json:"parent_key,omitempty"`
 	SubtaskTypeID   string `json:"subtask_type_id,omitempty"`
 	SubtaskTypeName string `json:"subtask_type_name,omitempty"`
+	// Set when the issue's project is archived: Jira makes its issues
+	// read-only, so the entry can be viewed but not changed
+	ProjectArchived bool `json:"project_archived,omitempty"`
 }
 
 // CreateEventReq is the request body for creating a worklog
@@ -155,21 +158,27 @@ type JiraAccessibleResource struct {
 	URL  string `json:"url"`
 }
 
+// JiraIssueSearchResponse is one page of results from POST /search/jql
 type JiraIssueSearchResponse struct {
-	Issues []struct {
-		ID     string `json:"id"`
-		Key    string `json:"key"`
-		Fields struct {
-			Summary string `json:"summary"`
-			Project struct {
-				ID   string `json:"id"`
-				Key  string `json:"key"`
-				Name string `json:"name"`
-			} `json:"project"`
-			IssueType JiraIssueTypeRef `json:"issuetype"`
-			Parent    *JiraParentRef   `json:"parent,omitempty"`
-		} `json:"fields"`
-	} `json:"issues"`
+	Issues        []JiraSearchIssue `json:"issues"`
+	NextPageToken string            `json:"nextPageToken"`
+	IsLast        bool              `json:"isLast"`
+}
+
+// JiraSearchIssue is an issue as returned by the JQL search
+type JiraSearchIssue struct {
+	ID     string `json:"id"`
+	Key    string `json:"key"`
+	Fields struct {
+		Summary string `json:"summary"`
+		Project struct {
+			ID   string `json:"id"`
+			Key  string `json:"key"`
+			Name string `json:"name"`
+		} `json:"project"`
+		IssueType JiraIssueTypeRef `json:"issuetype"`
+		Parent    *JiraParentRef   `json:"parent,omitempty"`
+	} `json:"fields"`
 }
 
 // JiraIssueTypeRef is an issue type reference as returned in issue fields
@@ -177,6 +186,9 @@ type JiraIssueTypeRef struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Subtask bool   `json:"subtask"`
+	// Position in the issue hierarchy: -1 sub-task, 0 standard issue, 1 Epic,
+	// 2+ levels above Epic
+	HierarchyLevel int `json:"hierarchyLevel"`
 }
 
 // JiraParentRef is a parent issue reference as returned in issue fields
@@ -237,9 +249,16 @@ type JiraWorklog struct {
 	Author struct {
 		AccountID string `json:"accountId"`
 	} `json:"author"`
+	// Only populated when fetched with expand=properties
+	Properties []struct {
+		Key string `json:"key"`
+	} `json:"properties,omitempty"`
 }
 
+// JiraWorklogResponse is one page of an issue's worklogs
 type JiraWorklogResponse struct {
+	StartAt  int           `json:"startAt"`
+	Total    int           `json:"total"`
 	Worklogs []JiraWorklog `json:"worklogs"`
 }
 

@@ -27,6 +27,7 @@ type Cache struct {
 	// Site-level caches (shared across users of the same Jira site)
 	projectSubtasks   map[string]*CacheEntry[ProjectSubtaskConfig] // keyed by "{cloudID}/{projectKey}"
 	projectIssueTypes map[string]*CacheEntry[[]JiraIssueType]      // keyed by "{cloudID}/{projectKey}"
+	projectArchived   map[string]*CacheEntry[bool]                 // keyed by "{cloudID}/{projectKey}"
 	issueTypes        map[string]*CacheEntry[map[string]string]    // keyed by cloudID
 	mu                sync.RWMutex
 }
@@ -35,6 +36,7 @@ var cache = &Cache{
 	users:             make(map[string]*UserCache),
 	projectSubtasks:   make(map[string]*CacheEntry[ProjectSubtaskConfig]),
 	projectIssueTypes: make(map[string]*CacheEntry[[]JiraIssueType]),
+	projectArchived:   make(map[string]*CacheEntry[bool]),
 	issueTypes:        make(map[string]*CacheEntry[map[string]string]),
 }
 
@@ -145,6 +147,28 @@ func (c *Cache) SetProjectIssueTypes(cloudID, projectKey string, types []JiraIss
 	}
 }
 
+func (c *Cache) GetProjectArchived(cloudID, projectKey string) (bool, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	entry := c.projectArchived[cloudID+"/"+projectKey]
+	if entry == nil || entry.IsExpired() {
+		return false, false
+	}
+
+	return entry.Data, true
+}
+
+func (c *Cache) SetProjectArchived(cloudID, projectKey string, archived bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.projectArchived[cloudID+"/"+projectKey] = &CacheEntry[bool]{
+		Data:      archived,
+		ExpiresAt: time.Now().Add(cacheTTL),
+	}
+}
+
 func (c *Cache) GetIssueTypes(cloudID string) (map[string]string, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -168,7 +192,7 @@ func (c *Cache) SetIssueTypes(cloudID string, names map[string]string) {
 }
 
 // InvalidateSite clears site-level caches for a cloud ID (used by manual refresh
-// so sub-task config changes are picked up promptly)
+// so sub-task config and archived project changes are picked up promptly)
 func (c *Cache) InvalidateSite(cloudID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -182,6 +206,11 @@ func (c *Cache) InvalidateSite(cloudID string) {
 	for key := range c.projectIssueTypes {
 		if strings.HasPrefix(key, cloudID+"/") {
 			delete(c.projectIssueTypes, key)
+		}
+	}
+	for key := range c.projectArchived {
+		if strings.HasPrefix(key, cloudID+"/") {
+			delete(c.projectArchived, key)
 		}
 	}
 }

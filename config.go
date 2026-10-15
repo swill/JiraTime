@@ -24,8 +24,8 @@ func initConfig() {
 	// Set defaults
 	viper.SetDefault("PORT", 8080)
 	viper.SetDefault("HOURS_TARGET", 40)
-	viper.SetDefault("ACTIVE_ISSUES_WEEKS", 4)  // How many weeks back to look for active issues
-	viper.SetDefault("DONE_ISSUES_WEEKS", 2)    // How many weeks Done issues stay visible
+	viper.SetDefault("ACTIVE_ISSUES_WEEKS", 4) // How many weeks back to look for active issues
+	viper.SetDefault("DONE_ISSUES_DAYS", 90)   // How many days Done issues stay available to log time against
 
 	// Environment variables override config file
 	viper.AutomaticEnv()
@@ -54,5 +54,9 @@ func initConfig() {
 	// Validate SESSION_SECRET length
 	if len(viper.GetString("SESSION_SECRET")) < 32 {
 		logrus.Fatal("SESSION_SECRET must be at least 32 characters")
+	}
+
+	if viper.IsSet("DONE_ISSUES_WEEKS") {
+		logrus.Warnf("DONE_ISSUES_WEEKS is no longer used and is ignored - set DONE_ISSUES_DAYS instead (currently %d)", viper.GetInt("DONE_ISSUES_DAYS"))
 	}
 }

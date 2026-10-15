@@ -4,17 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 	"golang.org/x/oauth2"
 )
 
-const jiraAPIBase = "https://api.atlassian.com/ex/jira"
+// jiraAPIBase is a variable so tests can point the client at a mock server
+var jiraAPIBase = "https://api.atlassian.com/ex/jira"
 
 type JiraClient struct {
 	token   *oauth2.Token
@@ -58,10 +62,125 @@ func (c *JiraClient) doRequest(ctx context.Context, method, endpoint string, bod
 	return c.client.Do(req)
 }
 
+const maxReadRetries = 3
+
+// doReadRequest is doRequest for read-only calls, retried when Jira is rate
+// limiting (429) or briefly unavailable (502/503/504). Writes are not retried
+// since repeating one could duplicate a worklog.
+func (c *JiraClient) doReadRequest(ctx context.Context, method, endpoint string, body interface{}) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		resp, err := c.doRequest(ctx, method, endpoint, body)
+		if err != nil || attempt == maxReadRetries || !isRetryableStatus(resp.StatusCode) {
+			return resp, err
+		}
+
+		wait := retryDelay(resp, attempt)
+		resp.Body.Close()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+func isRetryableStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// retryDelay honours Jira's Retry-After header (in seconds), falling back to
+// exponential backoff, capped so a request never stalls for long
+func retryDelay(resp *http.Response, attempt int) time.Duration {
+	delay := time.Duration(500<<attempt) * time.Millisecond // 0.5s, 1s, 2s
+	if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
+		delay = time.Duration(secs) * time.Second
+	}
+	return min(delay, 10*time.Second)
+}
+
+// archivedProjects controls whether a search returns issues in archived
+// projects, which Jira leaves out of search results by default
+type archivedProjects bool
+
+const (
+	excludeArchivedProjects archivedProjects = false
+	includeArchivedProjects archivedProjects = true
+)
+
+// searchIssues runs a JQL search, following nextPageToken until limit issues
+// have been collected (limit <= 0 means all of them). Jira can return fewer
+// issues per page than requested, so one page is not necessarily everything.
+func (c *JiraClient) searchIssues(ctx context.Context, jql string, fields []string, limit int, archived archivedProjects) ([]JiraSearchIssue, error) {
+	const pageSize = 100
+
+	var issues []JiraSearchIssue
+	nextPageToken := ""
+	for {
+		maxResults := pageSize
+		if limit > 0 {
+			maxResults = min(pageSize, limit-len(issues))
+		}
+
+		searchReq := map[string]interface{}{
+			"jql":        jql,
+			"fields":     fields,
+			"maxResults": maxResults,
+		}
+		if nextPageToken != "" {
+			searchReq["nextPageToken"] = nextPageToken
+		}
+		if archived == includeArchivedProjects {
+			searchReq["includeArchivedProjects"] = true
+		}
+
+		resp, err := c.doReadRequest(ctx, "POST", "/search/jql", searchReq)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("search issues failed: %d %s", resp.StatusCode, body)
+		}
+
+		var page JiraIssueSearchResponse
+		err = json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		issues = append(issues, page.Issues...)
+		if page.IsLast || page.NextPageToken == "" || (limit > 0 && len(issues) >= limit) {
+			return issues, nil
+		}
+		nextPageToken = page.NextPageToken
+	}
+}
+
+// isEpicLevel reports whether an issue type sits at Epic level or above in the
+// issue hierarchy. Time is not logged against these, so they are left out of
+// the issue pickers. Uses the hierarchy level rather than the name so renamed
+// Epic types are still caught.
+func isEpicLevel(issueType JiraIssueTypeRef) bool {
+	return issueType.HierarchyLevel >= 1
+}
+
+// doneIssuesJQL limits Done issues to those completed within DONE_ISSUES_DAYS,
+// so recently finished work can still have time logged against it
+func doneIssuesJQL() string {
+	return fmt.Sprintf("(statusCategory != Done OR statusCategoryChangedDate >= -%dd)", viper.GetInt("DONE_ISSUES_DAYS"))
+}
+
 // SearchUsers searches for users by query string
 func (c *JiraClient) SearchUsers(ctx context.Context, query string) ([]JiraUser, error) {
 	endpoint := fmt.Sprintf("/user/search?query=%s&maxResults=20", query)
-	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	resp, err := c.doReadRequest(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +200,7 @@ func (c *JiraClient) SearchUsers(ctx context.Context, query string) ([]JiraUser,
 }
 
 func (c *JiraClient) GetCurrentUser(ctx context.Context) (*JiraUser, error) {
-	resp, err := c.doRequest(ctx, "GET", "/myself", nil)
+	resp, err := c.doReadRequest(ctx, "GET", "/myself", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -102,39 +221,26 @@ func (c *JiraClient) GetCurrentUser(ctx context.Context) (*JiraUser, error) {
 
 func (c *JiraClient) GetMyIssues(ctx context.Context, accountID string) ([]IssuesByProject, error) {
 	// JQL to get "active" issues: assigned to user, created by user, or user has logged time
-	// Limited to issues with recent activity to avoid showing stale tickets
-	// Include Done issues for configurable period so users can still log time on recently completed work
+	// Limited to issues with recent activity to avoid showing stale tickets.
+	// Done issues are included for DONE_ISSUES_DAYS, but still need activity
+	// within ACTIVE_ISSUES_WEEKS, so they leave the sidebar sooner than search.
 	activeWeeks := viper.GetInt("ACTIVE_ISSUES_WEEKS")
-	doneWeeks := viper.GetInt("DONE_ISSUES_WEEKS")
 
 	// Use accountID directly instead of currentUser() to support impersonation
-	jql := fmt.Sprintf("(assignee = \"%s\" OR reporter = \"%s\" OR worklogAuthor = \"%s\") AND updated >= -%dw AND (statusCategory != Done OR (statusCategory = Done AND statusCategoryChangedDate >= -%dw)) ORDER BY updated DESC", accountID, accountID, accountID, activeWeeks, doneWeeks)
+	jql := fmt.Sprintf("(assignee = \"%s\" OR reporter = \"%s\" OR worklogAuthor = \"%s\") AND updated >= -%dw AND %s ORDER BY updated DESC", accountID, accountID, accountID, activeWeeks, doneIssuesJQL())
 
-	searchReq := map[string]interface{}{
-		"jql":        jql,
-		"fields":     []string{"summary", "project"},
-		"maxResults": 100,
-	}
-
-	resp, err := c.doRequest(ctx, "POST", "/search/jql", searchReq)
+	issues, err := c.searchIssues(ctx, jql, []string{"summary", "project", "issuetype"}, 100, excludeArchivedProjects)
 	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("search issues failed: %d %s", resp.StatusCode, body)
-	}
-
-	var searchResp JiraIssueSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
 		return nil, err
 	}
 
 	// Group issues by project
 	projectMap := make(map[string]*IssuesByProject)
-	for _, issue := range searchResp.Issues {
+	for _, issue := range issues {
+		if isEpicLevel(issue.Fields.IssueType) {
+			continue
+		}
+
 		projectKey := issue.Fields.Project.Key
 		if _, ok := projectMap[projectKey]; !ok {
 			projectMap[projectKey] = &IssuesByProject{
@@ -165,36 +271,22 @@ func (c *JiraClient) GetMyIssues(ctx context.Context, accountID string) ([]Issue
 
 func (c *JiraClient) SearchIssues(ctx context.Context, query string) ([]Issue, error) {
 	// Search for issues by text query (summary, key, or description)
-	// Apply Done filter for consistency with Active Issues
-	doneWeeks := viper.GetInt("DONE_ISSUES_WEEKS")
+	// Done issues stay searchable for DONE_ISSUES_DAYS after completion
 
 	// Use wildcard (*) for partial matching in summary, key, and description
-	jql := fmt.Sprintf("(summary ~ \"%s*\" OR key ~ \"%s*\" OR description ~ \"%s*\") AND (statusCategory != Done OR (statusCategory = Done AND statusCategoryChangedDate >= -%dw)) ORDER BY updated DESC", query, query, query, doneWeeks)
+	jql := fmt.Sprintf("(summary ~ \"%s*\" OR key ~ \"%s*\" OR description ~ \"%s*\") AND %s ORDER BY updated DESC", query, query, query, doneIssuesJQL())
 
-	searchReq := map[string]interface{}{
-		"jql":        jql,
-		"fields":     []string{"summary", "project"},
-		"maxResults": 100,
-	}
-
-	resp, err := c.doRequest(ctx, "POST", "/search/jql", searchReq)
+	results, err := c.searchIssues(ctx, jql, []string{"summary", "project", "issuetype"}, 100, excludeArchivedProjects)
 	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("search issues failed: %d %s", resp.StatusCode, body)
-	}
-
-	var searchResp JiraIssueSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
 		return nil, err
 	}
 
 	var issues []Issue
-	for _, issue := range searchResp.Issues {
+	for _, issue := range results {
+		if isEpicLevel(issue.Fields.IssueType) {
+			continue
+		}
+
 		issues = append(issues, Issue{
 			ID:         issue.ID,
 			Key:        issue.Key,
@@ -206,63 +298,88 @@ func (c *JiraClient) SearchIssues(ctx context.Context, query string) ([]Issue, e
 	return issues, nil
 }
 
-func (c *JiraClient) GetWorklogs(ctx context.Context, issueKey string) ([]JiraWorklog, error) {
-	endpoint := fmt.Sprintf("/issue/%s/worklog", issueKey)
-	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+// errIssueNotFound is returned when an issue no longer exists (or is no longer
+// visible to the user)
+var errIssueNotFound = errors.New("issue not found")
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get worklogs failed: %d %s", resp.StatusCode, body)
-	}
+// GetWorklogs returns an issue's worklogs started between startedAfter and
+// startedBefore, following pagination. Properties are expanded inline so the
+// JiraTime source marker needs no extra request per worklog.
+func (c *JiraClient) GetWorklogs(ctx context.Context, issueKey string, startedAfter, startedBefore time.Time) ([]JiraWorklog, error) {
+	var worklogs []JiraWorklog
+	for {
+		endpoint := fmt.Sprintf("/issue/%s/worklog?startAt=%d&startedAfter=%d&startedBefore=%d&expand=properties",
+			issueKey, len(worklogs), startedAfter.UnixMilli(), startedBefore.UnixMilli())
+		resp, err := c.doReadRequest(ctx, "GET", endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
 
-	var worklogResp JiraWorklogResponse
-	if err := json.NewDecoder(resp.Body).Decode(&worklogResp); err != nil {
-		return nil, err
-	}
+		if resp.StatusCode == http.StatusNotFound {
+			resp.Body.Close()
+			return nil, errIssueNotFound
+		}
 
-	return worklogResp.Worklogs, nil
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("get worklogs failed: %d %s", resp.StatusCode, body)
+		}
+
+		var page JiraWorklogResponse
+		err = json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		worklogs = append(worklogs, page.Worklogs...)
+		if len(page.Worklogs) == 0 || len(worklogs) >= page.Total {
+			return worklogs, nil
+		}
+	}
+}
+
+// hasProperty reports whether a worklog carries the given property (requires
+// the worklog to have been fetched with expand=properties)
+func (wl *JiraWorklog) hasProperty(key string) bool {
+	for _, p := range wl.Properties {
+		if p.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time.Time, accountID string) ([]CalendarEvent, error) {
-	// Search for issues with worklogs in the date range by the specified user
-	startStr := start.Format("2006-01-02")
-	endStr := end.Format("2006-01-02")
+	// Search for issues with worklogs in the date range by the specified user.
+	// The window is widened by a day each side because worklogDate is evaluated
+	// in the user's Jira profile timezone, which may differ from the browser's;
+	// worklogs are filtered to the exact range below.
+	startStr := start.AddDate(0, 0, -1).Format("2006-01-02")
+	endStr := end.AddDate(0, 0, 1).Format("2006-01-02")
 
 	// Use accountID directly instead of currentUser() to support impersonation
 	jql := fmt.Sprintf("worklogDate >= %s AND worklogDate <= %s AND worklogAuthor = \"%s\"", startStr, endStr, accountID)
 
-	searchReq := map[string]interface{}{
-		"jql":        jql,
-		"fields":     []string{"summary", "project", "issuetype", "parent"},
-		"maxResults": 100,
-	}
-
-	resp, err := c.doRequest(ctx, "POST", "/search/jql", searchReq)
+	// Archived projects are included so time logged on them stays on the
+	// calendar and in the hours total (Jira hides them from search otherwise)
+	issues, err := c.searchIssues(ctx, jql, []string{"summary", "project", "issuetype", "parent"}, 0, includeArchivedProjects)
 	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("search worklogs failed: %d %s", resp.StatusCode, body)
-	}
-
-	var searchResp JiraIssueSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
 		return nil, err
 	}
 
 	// Fetch worklogs for each issue and filter by user and date range
 	var events []CalendarEvent
-	for _, issue := range searchResp.Issues {
-		worklogs, err := c.GetWorklogs(ctx, issue.Key)
+	for _, issue := range issues {
+		worklogs, err := c.GetWorklogs(ctx, issue.Key, start.Add(-time.Minute), end.Add(time.Minute))
+		if errors.Is(err, errIssueNotFound) {
+			continue // Deleted since the search ran
+		}
 		if err != nil {
-			continue // Skip issues we can't get worklogs for
+			// Fail visibly: silently skipping the issue would show an
+			// incomplete calendar and hours total
+			return nil, fmt.Errorf("failed to get worklogs for %s: %w", issue.Key, err)
 		}
 
 		// Detect worklogs living on configured sub-tasks (billable or
@@ -282,6 +399,7 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 			}
 		}
 
+		issueStart := len(events)
 		for _, wl := range worklogs {
 			// Filter by current user
 			if wl.Author.AccountID != accountID {
@@ -307,9 +425,6 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 				}
 			}
 
-			// Check if worklog was created by JiraTime
-			fromJiraTime := c.IsWorklogFromJiraTime(ctx, issue.Key, wl.ID)
-
 			events = append(events, CalendarEvent{
 				ID:              fmt.Sprintf("%s-%s", issue.Key, wl.ID),
 				Title:           title,
@@ -319,11 +434,24 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 				IssueID:         issue.ID,
 				WorklogID:       wl.ID,
 				Description:     description,
-				FromJiraTime:    fromJiraTime,
+				FromJiraTime:    wl.hasProperty(worklogSourcePropertyKey),
 				ParentKey:       parentKey,
 				SubtaskTypeID:   subtaskTypeID,
 				SubtaskTypeName: subtaskTypeName,
 			})
+		}
+
+		// Issues in archived projects are read-only in Jira, so their entries
+		// are shown but cannot be changed
+		if len(events) > issueStart {
+			archived, err := c.GetProjectArchivedCached(ctx, issue.Fields.Project.Key)
+			if err != nil {
+				// Still show the entries; Jira rejects any change if it is archived
+				logrus.Warnf("Could not check whether project %s is archived: %v", issue.Fields.Project.Key, err)
+			}
+			for i := issueStart; i < len(events); i++ {
+				events[i].ProjectArchived = archived
+			}
 		}
 	}
 
@@ -470,20 +598,6 @@ func (c *JiraClient) SetWorklogProperty(ctx context.Context, issueKey, worklogID
 	return nil
 }
 
-// IsWorklogFromJiraTime checks if a worklog was created by JiraTime
-func (c *JiraClient) IsWorklogFromJiraTime(ctx context.Context, issueKey, worklogID string) bool {
-	endpoint := fmt.Sprintf("/issue/%s/worklog/%s/properties/jiratime.source", issueKey, worklogID)
-
-	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	// If property exists, it's from JiraTime
-	return resp.StatusCode == http.StatusOK
-}
-
 // flexBool decodes a JSON boolean that a loosely-coupled metadata source (the
 // jirametadata Forge app is configured per deployment) may instead store as a
 // string ("Yes"/"true"/"1") or a number. Decoding it as a plain bool would fail
@@ -518,6 +632,54 @@ func (b *flexBool) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// GetProjectArchived reports whether a project is archived. A project that
+// cannot be found is reported as archived: this is only asked about projects
+// whose issues were just read, so a missing project means Jira is hiding it
+// (or it was deleted moments ago, in which case its entries are gone on the
+// next load anyway).
+func (c *JiraClient) GetProjectArchived(ctx context.Context, projectKey string) (bool, error) {
+	endpoint := fmt.Sprintf("/project/%s", projectKey)
+
+	resp, err := c.doReadRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return true, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("get project failed: %d %s", resp.StatusCode, body)
+	}
+
+	var project struct {
+		Archived bool `json:"archived"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&project); err != nil {
+		return false, err
+	}
+
+	return project.Archived, nil
+}
+
+// GetProjectArchivedCached is GetProjectArchived with a site-level cache
+func (c *JiraClient) GetProjectArchivedCached(ctx context.Context, projectKey string) (bool, error) {
+	if archived, ok := cache.GetProjectArchived(c.cloudID, projectKey); ok {
+		return archived, nil
+	}
+
+	archived, err := c.GetProjectArchived(ctx, projectKey)
+	if err != nil {
+		return false, err
+	}
+	cache.SetProjectArchived(c.cloudID, projectKey, archived)
+
+	return archived, nil
+}
+
 // GetProjectSubtaskConfig returns the sub-task configuration for a project from
 // its jirametadata project property. A non-billable project may set billable
 // sub-task types (billable_subtasks field); a billable project may set
@@ -527,7 +689,7 @@ func (b *flexBool) UnmarshalJSON(data []byte) error {
 func (c *JiraClient) GetProjectSubtaskConfig(ctx context.Context, projectKey string) (ProjectSubtaskConfig, error) {
 	endpoint := fmt.Sprintf("/project/%s/properties/jirametadata", projectKey)
 
-	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	resp, err := c.doReadRequest(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return ProjectSubtaskConfig{}, err
 	}
@@ -618,7 +780,7 @@ func (c *JiraClient) GetIssueTypeNamesCached(ctx context.Context) (map[string]st
 func (c *JiraClient) GetProjectIssueTypes(ctx context.Context, projectKey string) ([]JiraIssueType, error) {
 	endpoint := fmt.Sprintf("/issue/createmeta/%s/issuetypes?maxResults=200", projectKey)
 
-	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	resp, err := c.doReadRequest(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -729,7 +891,7 @@ func subtaskTypeByID(types []SubtaskType, id string) *SubtaskType {
 
 // GetIssueTypeNames returns a map of issue type ID -> name for the Jira site
 func (c *JiraClient) GetIssueTypeNames(ctx context.Context) (map[string]string, error) {
-	resp, err := c.doRequest(ctx, "GET", "/issuetype", nil)
+	resp, err := c.doReadRequest(ctx, "GET", "/issuetype", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -757,7 +919,7 @@ func (c *JiraClient) GetIssueTypeNames(ctx context.Context) (map[string]string, 
 func (c *JiraClient) GetIssueDetail(ctx context.Context, issueKey string) (*JiraIssueDetail, error) {
 	endpoint := fmt.Sprintf("/issue/%s?fields=summary,project,issuetype,parent,subtasks", issueKey)
 
-	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	resp, err := c.doReadRequest(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, err
 	}

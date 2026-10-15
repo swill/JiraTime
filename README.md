@@ -73,7 +73,7 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
    PORT = 8080
    HOURS_TARGET = 40
    ACTIVE_ISSUES_WEEKS = 4   # How far back to look for activity
-   DONE_ISSUES_WEEKS = 2     # How long Done issues stay visible
+   DONE_ISSUES_DAYS = 90     # How long Done issues can still have time logged
    ```
 
 3. Generate a session secret (at least 32 characters):
@@ -180,6 +180,8 @@ If the issue's project has billable or non-billable sub-tasks configured (see [B
 - **Edit Details**: Click an event to open the edit dialog
 - **Delete**: Click an event, then click "Delete" in the dialog
 
+Time logged on a project that has since been archived still shows on the calendar and counts toward the hours total. Jira doesn't allow changes to archived projects, so these entries are faded and striped, can't be moved, resized or copied, and open in a view-only dialog. Restore the project in Jira to change them.
+
 ### Keyboard Shortcuts
 
 - **Shift+Drag**: Copy an event instead of moving it
@@ -220,9 +222,11 @@ Additionally, Active Issues are filtered to only show issues with recent activit
 
 **Both sections** include:
 - Open issues (any status except Done)
-- Recently completed issues (Done status within the configured period, default 2 weeks) - so you can still log time on recently finished work
+- Recently completed issues (Done within the configured period, default 90 days) - so you can still log time on recently finished work. In Active Issues, Done issues also need activity within the 4-week window, so they drop off the sidebar sooner but stay searchable for the full period.
 
-These time periods are configurable via `ACTIVE_ISSUES_WEEKS` and `DONE_ISSUES_WEEKS` in your config.
+**Both sections** exclude Epics (and anything above Epic in the issue hierarchy), since time is not logged against them. Time already logged on an Epic still shows on the calendar.
+
+These time periods are configurable via `ACTIVE_ISSUES_WEEKS` and `DONE_ISSUES_DAYS` in your config.
 
 **Search Results** may include some issues also shown in Active Issues.
 
@@ -296,11 +300,13 @@ There are two roles:
 3. Click their name to view their calendar
 4. A yellow banner shows "Viewing as: [Name]" with a Stop button
 5. All modifications (create, edit, delete) are blocked while impersonating
+
+**What you see:** the calendar, hours total and Active Issues are loaded with the team member's own Jira access, so you see exactly what they see, including time on projects you can't open in Jira yourself. Issue search and everything else still uses your own access. This needs the team member to have signed in to JiraTime at least once (and within Atlassian's 90-day inactivity limit). If they haven't, JiraTime falls back to your own access and shows a warning under the "Viewing as" bar, because entries on projects you can't open will be missing. Viewing someone's calendar keeps their saved sign-in active. Starting and stopping impersonation is recorded in the server log.
 6. Click "Stop" to return to your own calendar
 
 ### Hours Widget
 
-The hours widget shows your logged hours for the current week:
+The hours widget shows your logged hours (to two decimal places, e.g. 0.25) for the Monday-to-Sunday week being viewed, including in Day view:
 - **Red**: Under target hours
 - **Green**: Target hours met or exceeded
 
@@ -320,6 +326,10 @@ Click the gear icon (⚙) in the sidebar footer to configure the visible time ra
 
 Overnight ranges (where end time is before start time) are fully supported. Settings are stored in your browser and persist across sessions.
 
+If the week or day being viewed has time entries outside the configured range (e.g. time logged in Jira at 11pm), the calendar temporarily stretches its visible hours to include them, so no entry is ever hidden.
+
+The Day/Week view you choose is also remembered in your browser and kept when the window is resized. Narrow (mobile) screens always use Day view and return to your chosen view when widened again.
+
 ## Configuration Reference
 
 | Key | Required | Default | Description |
@@ -331,7 +341,7 @@ Overnight ranges (where end time is before start time) are fully supported. Sett
 | `PORT` | No | 8080 | HTTP server port (set to 443 for HTTPS with Let's Encrypt) |
 | `HOURS_TARGET` | No | 40 | Weekly hours target for the widget |
 | `ACTIVE_ISSUES_WEEKS` | No | 4 | Weeks of activity for Active Issues filter |
-| `DONE_ISSUES_WEEKS` | No | 2 | Weeks that Done issues remain visible |
+| `DONE_ISSUES_DAYS` | No | 90 | Days after completion that Done issues can still have time logged (replaces `DONE_ISSUES_WEEKS`) |
 | `SUPER_USERS` | No | [] | Site administrator account IDs: can impersonate other users and manage Managers in-app |
 
 Environment variables can override config file values (e.g., `JIRA_CLIENT_ID=xxx ./jiratime`).
@@ -396,7 +406,7 @@ jiratime/
 | DELETE | `/api/events/{id}` | Delete a worklog |
 | GET | `/api/issues` | Get issues assigned to current user |
 | GET | `/api/issues/search?q=X` | Search all Jira issues by text |
-| GET | `/api/hours?week=X` | Get weekly hours summary |
+| GET | `/api/hours?start=X&end=Y` | Get hours summary for a week (RFC 3339 bounds in the user's timezone) |
 | POST | `/api/refresh` | Force cache refresh |
 | GET | `/api/user` | Get current user info |
 | GET | `/api/users/search?q=X` | Search users (super users and managers) |
@@ -418,8 +428,12 @@ jiratime/
 
 ### Events not loading
 - Click the "Refresh" button to clear the cache
-- Check browser console for API errors
+- If loading fails, an error is shown rather than an incomplete calendar (Jira rate limits and brief outages are retried automatically first)
 - Ensure you have worklogs in the visible date range
+
+### Time on an archived project is missing
+- Jira only returns archived projects you can still browse. If an admin removed access before archiving the project, its entries can't be shown; restoring access (or the project) brings them back.
+- Issues archived one at a time (a Premium/Enterprise feature, separate from archiving a whole project) are not returned by Jira search, so their time can't be shown. Unarchive the issue to see it again.
 
 ### Billable/Non-billable sub-task types don't appear in the dialog
 - The sub-task type must be added to the **project's** Work Item Type scheme first (Project settings → **Work items → Types**, or **Work types** for team-managed projects). Types configured in JiraMetadata but missing from the project's scheme are silently ignored. See [Setting up a project's sub-task types](#setting-up-a-projects-sub-task-types-order-matters).
@@ -439,8 +453,10 @@ To add the property (requires Jira site admin):
 
 ### Session expires frequently
 - The app automatically refreshes tokens and persists sessions across restarts
-- Sessions are stored in `sessions.json` and tokens in `tokens.json`
+- Sessions are stored in `sessions.json` and tokens in `tokens.json` (one token per user, shared by all of their browsers and devices)
+- Sign-in cookies are renewed on each use and last 90 days, matching Atlassian's refresh-token inactivity expiry
 - Logout/login will restore your session without requiring OAuth re-authorization
+- Users are only sent back through the Atlassian approval screen when Atlassian rejects the saved refresh token; network errors and Atlassian outages show a temporary error instead
 - If issues persist, delete `sessions.json` and `tokens.json` and re-authenticate
 
 ## License

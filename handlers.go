@@ -49,7 +49,7 @@ func handleGetEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := NewJiraClient(session.Token, session.CloudID)
+	client, limited := viewClientFor(session)
 	effectiveAccountID := getEffectiveAccountID(session)
 	events, err := client.GetMyWorklogsForPeriod(r.Context(), start, end, effectiveAccountID)
 	if err != nil {
@@ -58,6 +58,10 @@ func handleGetEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Lets the "Viewing as" bar warn that entries may be missing
+	if limited {
+		w.Header().Set("X-View-Limited", "1")
+	}
 	writeJSON(w, events)
 }
 
@@ -88,7 +92,7 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 
 	durationSeconds := req.DurationMin * 60
 
-	client := NewJiraClient(session.Token, session.CloudID)
+	client := jiraClientFor(session)
 
 	// Route the worklog to a billable sub-task when one was selected
 	targetKey, err := resolveWorklogTarget(r.Context(), client, req.IssueKey, req.SubtaskTypeID, req.SubtaskKey)
@@ -170,7 +174,7 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 
 	durationSeconds := req.DurationMin * 60
 
-	client := NewJiraClient(session.Token, session.CloudID)
+	client := jiraClientFor(session)
 
 	// Dialog saves send ParentKey so the sub-task association can change; when
 	// the target differs from where the worklog lives, it has to move
@@ -262,7 +266,7 @@ func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 	issueKey := eventID[:lastDash]
 	worklogID := eventID[lastDash+1:]
 
-	client := NewJiraClient(session.Token, session.CloudID)
+	client := jiraClientFor(session)
 
 	if err := client.DeleteWorklog(r.Context(), issueKey, worklogID); err != nil {
 		logrus.Errorf("Failed to delete worklog: %v", err)
@@ -288,14 +292,18 @@ func handleGetIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := NewJiraClient(session.Token, session.CloudID)
+	client, limited := viewClientFor(session)
 	issues, err := client.GetMyIssues(r.Context(), effectiveAccountID)
 	if err != nil {
 		logrus.Errorf("Failed to get issues: %v", err)
 		http.Error(w, "Failed to get issues", http.StatusInternalServerError)
 		return
 	}
-	cache.SetIssues(effectiveAccountID, issues)
+	// A limited view can be missing issues, so it must not become what the
+	// user sees in their own sidebar
+	if !limited {
+		cache.SetIssues(effectiveAccountID, issues)
+	}
 	writeJSON(w, issues)
 }
 
@@ -306,14 +314,22 @@ func handleGetHours(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	weekStr := r.URL.Query().Get("week")
-	var weekStart time.Time
+	// The client sends its local week bounds (Monday 00:00 to the next Monday
+	// 00:00, RFC 3339 with offset) so the week matches the user's timezone
+	startStr := r.URL.Query().Get("start")
+	endStr := r.URL.Query().Get("end")
+	var weekStart, weekEnd time.Time
 	var err error
 
-	if weekStr != "" {
-		weekStart, err = time.Parse("2006-01-02", weekStr)
+	if startStr != "" || endStr != "" {
+		weekStart, err = time.Parse(time.RFC3339, startStr)
 		if err != nil {
-			http.Error(w, "Invalid week date", http.StatusBadRequest)
+			http.Error(w, "Invalid start date", http.StatusBadRequest)
+			return
+		}
+		weekEnd, err = time.Parse(time.RFC3339, endStr)
+		if err != nil {
+			http.Error(w, "Invalid end date", http.StatusBadRequest)
 			return
 		}
 	} else {
@@ -324,11 +340,10 @@ func handleGetHours(w http.ResponseWriter, r *http.Request) {
 			weekday = 7 // Sunday
 		}
 		weekStart = now.AddDate(0, 0, -(weekday - 1)).Truncate(24 * time.Hour)
+		weekEnd = weekStart.AddDate(0, 0, 7)
 	}
 
-	weekEnd := weekStart.AddDate(0, 0, 7)
-
-	client := NewJiraClient(session.Token, session.CloudID)
+	client, _ := viewClientFor(session)
 	effectiveAccountID := getEffectiveAccountID(session)
 	events, err := client.GetMyWorklogsForPeriod(r.Context(), weekStart, weekEnd, effectiveAccountID)
 	if err != nil {
@@ -365,7 +380,7 @@ func handleSearchIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := NewJiraClient(session.Token, session.CloudID)
+	client := jiraClientFor(session)
 	issues, err := client.SearchIssues(r.Context(), query)
 	if err != nil {
 		logrus.Errorf("Failed to search issues: %v", err)
@@ -388,6 +403,9 @@ func handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cache.InvalidateAll(session.AccountID)
+	if isImpersonating(session) {
+		cache.InvalidateAll(session.ImpersonatingID)
+	}
 	cache.InvalidateSite(session.CloudID)
 	w.WriteHeader(http.StatusOK)
 	writeJSON(w, map[string]string{"status": "ok"})
@@ -439,7 +457,7 @@ func handleSearchUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := NewJiraClient(session.Token, session.CloudID)
+	client := jiraClientFor(session)
 	users, err := client.SearchUsers(r.Context(), query)
 	if err != nil {
 		logrus.Errorf("Failed to search users: %v", err)
@@ -498,6 +516,9 @@ func handleImpersonate(w http.ResponseWriter, r *http.Request) {
 	session.ImpersonatingName = req.DisplayName
 	saveSession(session)
 
+	// Audit trail: the viewer reads this user's time with the user's own Jira access
+	logrus.Infof("%s started viewing %s's calendar", session.AccountID, req.AccountID)
+
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -511,6 +532,10 @@ func handleStopImpersonate(w http.ResponseWriter, r *http.Request) {
 	if session == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
+	}
+
+	if session.ImpersonatingID != "" {
+		logrus.Infof("%s stopped viewing %s's calendar", session.AccountID, session.ImpersonatingID)
 	}
 
 	// Clear impersonation
@@ -541,7 +566,7 @@ func handleSubtaskOptions(w http.ResponseWriter, r *http.Request, issueKey strin
 		return
 	}
 
-	client := NewJiraClient(session.Token, session.CloudID)
+	client := jiraClientFor(session)
 
 	detail, err := client.GetIssueDetail(r.Context(), issueKey)
 	if err != nil {

@@ -11,6 +11,7 @@ __config.sh
 tokens.json
 sessions.json
 managers.json
+*.json.tmp
 
 # Let's Encrypt certificates
 certs/

@@ -1,4 +1,4 @@
-.PHONY: build compile deploy deps dev clean
+.PHONY: build compile deploy deps dev clean test
 
 # Cross compile for different platforms
 compile:
@@ -9,6 +9,10 @@ compile:
 # Build the application
 build:
 	go build -o jiratime .
+
+# Run unit tests
+test:
+	go test ./...
 
 # Run development server
 run:

@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>JiraTime</title>
-    <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.css" rel="stylesheet">
     <link href="/css/style.css" rel="stylesheet">
     <script>
         (function() {
@@ -24,6 +23,7 @@
                     <span class="viewing-as">Viewing as: <strong id="impersonatingName"></strong></span>
                     <button id="stopImpersonateBtn" class="btn btn-small btn-danger">Stop</button>
                 </div>
+                <div class="impersonation-limited hidden" id="impersonationLimited"></div>
                 <div class="impersonate-controls hidden" id="impersonateControls">
                     <input type="text" id="impersonateSearch" placeholder="Search users to impersonate..." autocomplete="off">
                     <div class="impersonate-results hidden" id="impersonateResults"></div>
@@ -75,6 +75,7 @@
     <dialog id="editDialog">
         <form id="editForm" method="dialog">
             <h2 id="dialogTitle">Edit Time Entry</h2>
+            <p id="dialogNote" class="dialog-note hidden"></p>
 
             <div class="form-group">
                 <label for="eventIssue">Issue</label>
@@ -168,7 +169,8 @@
         </form>
     </dialog>
 
-    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+    <!-- 6.1.17+ refreshes the now indicator when a minimized/background tab becomes visible again -->
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.21/index.global.min.js"></script>
     <script src="/js/app.js"></script>
 </body>
 </html>

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +28,14 @@ const (
 	tokenFile       = "tokens.json"
 	sessionCookie   = "jiratime_session"
 	accountIDCookie = "jiratime_account"
+
+	// Auth cookies are renewed on every authenticated request, so only users
+	// idle this long have to sign in again. Matches Atlassian's 90-day refresh
+	// token inactivity expiry - past that the saved token is dead anyway.
+	authCookieMaxAge = 90 * 24 * 60 * 60
+
+	// Access tokens are refreshed when this close to expiry
+	tokenRefreshMargin = 5 * time.Minute
 )
 
 var (
@@ -142,16 +151,16 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		DisplayName: user.DisplayName,
 		Email:       user.EmailAddress,
 		AvatarURL:   user.AvatarURLs.Large,
-		Token:       token,
 	}
+
+	// Save token and session data for persistence. The new token replaces the
+	// account's previous one for all of its sessions.
+	accountTokens.set(user.AccountID, token)
+	saveSessionData(user.AccountID, session)
 
 	sessionID := createSession(session)
 	setSessionCookie(w, sessionID)
 	setAccountIDCookie(w, user.AccountID)
-
-	// Save token and session data for persistence
-	saveToken(user.AccountID, token)
-	saveSessionData(user.AccountID, session)
 
 	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 }
@@ -188,24 +197,31 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			saveSession(session)
 		}
 
-		// Refresh token if needed
-		if session.Token.Expiry.Before(time.Now().Add(5 * time.Minute)) {
-			newToken, err := refreshToken(r.Context(), session.Token)
-			if err != nil {
-				logrus.Errorf("Failed to refresh token: %v", err)
-				deleteSession(getSessionCookie(r))
-				clearSessionCookie(w)
-				clearAccountIDCookie(w)
-				if strings.HasPrefix(r.URL.Path, "/api/") {
-					http.Error(w, "Session expired", http.StatusUnauthorized)
-				} else {
-					http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
-				}
+		// Make sure the account's token is current, refreshing it if needed
+		if _, err := accountTokens.validToken(session.AccountID); err != nil {
+			if !isTokenRejected(err) {
+				// Network error or Atlassian outage: keep the session so the user
+				// is not sent back through the OAuth consent screen
+				logrus.Warnf("Token refresh for %s failed, keeping session: %v", session.AccountID, err)
+				http.Error(w, "Unable to reach Jira, please try again shortly", http.StatusServiceUnavailable)
 				return
 			}
-			session.Token = newToken
-			saveToken(session.AccountID, newToken)
+
+			logrus.Errorf("Refresh token for %s was rejected, sign-in required: %v", session.AccountID, err)
+			deleteSession(getSessionCookie(r))
+			clearSessionCookie(w)
+			clearAccountIDCookie(w)
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				http.Error(w, "Session expired", http.StatusUnauthorized)
+			} else {
+				http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
+			}
+			return
 		}
+
+		// Sliding expiry: keep active users signed in
+		setSessionCookie(w, getSessionCookie(r))
+		setAccountIDCookie(w, session.AccountID)
 
 		next(w, r)
 	}
@@ -274,7 +290,7 @@ func setSessionCookie(w http.ResponseWriter, sessionID string) {
 		HttpOnly: true,
 		Secure:   strings.HasPrefix(viper.GetString("BASE_URL"), "https"),
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   86400 * 30, // 30 days
+		MaxAge:   authCookieMaxAge,
 	})
 }
 
@@ -375,47 +391,194 @@ func getAccessibleResource(accessToken string) (string, string, error) {
 	return resources[0].ID, resources[0].URL, nil
 }
 
+// refreshToken exchanges a refresh token for a new token pair. Only the refresh
+// token is passed to the oauth2 library, which would otherwise hand back the
+// old access token until it had fully expired instead of refreshing.
 func refreshToken(ctx context.Context, token *oauth2.Token) (*oauth2.Token, error) {
 	config := getOAuthConfig()
-	src := config.TokenSource(ctx, token)
-	newToken, err := src.Token()
-	if err != nil {
-		return nil, err
-	}
-	return newToken, nil
+	return config.TokenSource(ctx, &oauth2.Token{RefreshToken: token.RefreshToken}).Token()
 }
 
-func saveToken(accountID string, token *oauth2.Token) {
-	tokens := loadTokens()
-	tokens.Tokens[accountID] = token
+// tokenStore holds one OAuth token per account, shared by every session
+// (browser/device) of that account and persisted to tokens.json. Atlassian
+// rotates refresh tokens - each refresh invalidates the previous refresh token
+// once a short reuse window passes - so per-session copies go stale and a
+// refresh with one fails, forcing the user back through the OAuth consent
+// screen. Refreshes are serialized per account for the same reason.
+type tokenStore struct {
+	path    string                                                      // persistence file
+	refresh func(context.Context, *oauth2.Token) (*oauth2.Token, error) // token exchange
 
-	data, err := json.MarshalIndent(tokens, "", "  ")
+	mu           sync.Mutex
+	tokens       map[string]*oauth2.Token // keyed by account_id
+	refreshLocks map[string]*sync.Mutex   // keyed by account_id
+}
+
+func newTokenStore(path string) *tokenStore {
+	return &tokenStore{
+		path:         path,
+		refresh:      refreshToken,
+		tokens:       make(map[string]*oauth2.Token),
+		refreshLocks: make(map[string]*sync.Mutex),
+	}
+}
+
+var accountTokens = newTokenStore(tokenFile)
+
+// errNoToken means there is no usable saved token, so the user must sign in
+var errNoToken = errors.New("no saved refresh token for account")
+
+// initTokens loads the persisted tokens into memory at startup
+func initTokens() {
+	accountTokens.load()
+}
+
+func (s *tokenStore) load() {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logrus.Errorf("Failed to read %s: %v", s.path, err)
+		}
+		return
+	}
+
+	var stored StoredTokens
+	if err := json.Unmarshal(data, &stored); err != nil {
+		logrus.Errorf("Failed to unmarshal %s: %v", s.path, err)
+		return
+	}
+
+	s.mu.Lock()
+	for accountID, token := range stored.Tokens {
+		s.tokens[accountID] = token
+	}
+	s.mu.Unlock()
+}
+
+func (s *tokenStore) get(accountID string) *oauth2.Token {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tokens[accountID]
+}
+
+// set stores an account's token and persists all tokens to disk
+func (s *tokenStore) set(accountID string, token *oauth2.Token) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.tokens[accountID] = token
+
+	data, err := json.MarshalIndent(StoredTokens{Tokens: s.tokens}, "", "  ")
 	if err != nil {
 		logrus.Errorf("Failed to marshal tokens: %v", err)
 		return
 	}
 
-	if err := os.WriteFile(tokenFile, data, 0600); err != nil {
+	if err := writeFileAtomic(s.path, data, 0600); err != nil {
 		logrus.Errorf("Failed to save tokens: %v", err)
 	}
 }
 
-func loadTokens() *StoredTokens {
-	tokens := &StoredTokens{
-		Tokens: make(map[string]*oauth2.Token),
+func (s *tokenStore) refreshLock(accountID string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	lock := s.refreshLocks[accountID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.refreshLocks[accountID] = lock
+	}
+	return lock
+}
+
+// validToken returns the account's token, refreshing it first when it is close
+// to expiry. Only one refresh runs per account at a time; callers that waited
+// on it pick up the token it stored.
+func (s *tokenStore) validToken(accountID string) (*oauth2.Token, error) {
+	lock := s.refreshLock(accountID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	token := s.get(accountID)
+	if token == nil {
+		return nil, errNoToken
+	}
+	if !token.Expiry.Before(time.Now().Add(tokenRefreshMargin)) {
+		return token, nil
+	}
+	if token.RefreshToken == "" {
+		return nil, errNoToken
 	}
 
-	data, err := os.ReadFile(tokenFile)
+	// Detached from the request context: if the browser gives up mid-refresh,
+	// Atlassian may already have rotated the refresh token, and dropping the
+	// response would strand the account on the invalidated one
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	newToken, err := s.refresh(ctx, token)
 	if err != nil {
-		return tokens
+		return nil, err
+	}
+	s.set(accountID, newToken)
+
+	return newToken, nil
+}
+
+// isTokenRejected reports whether a refresh failed because Atlassian rejected
+// the refresh token (expired, revoked or already rotated) - the only case that
+// needs a new OAuth sign-in. Network errors and Atlassian outages are
+// transient and must not send the user back to the consent screen.
+func isTokenRejected(err error) bool {
+	if errors.Is(err, errNoToken) {
+		return true
 	}
 
-	if err := json.Unmarshal(data, tokens); err != nil {
-		logrus.Errorf("Failed to unmarshal tokens: %v", err)
-		return &StoredTokens{Tokens: make(map[string]*oauth2.Token)}
+	var retrieveErr *oauth2.RetrieveError
+	if errors.As(err, &retrieveErr) && retrieveErr.Response != nil {
+		status := retrieveErr.Response.StatusCode
+		return status >= 400 && status < 500 && status != http.StatusTooManyRequests
 	}
 
-	return tokens
+	return false
+}
+
+// jiraClientFor returns a Jira client using the session account's current token
+func jiraClientFor(session *UserSession) *JiraClient {
+	return NewJiraClient(accountTokens.get(session.AccountID), session.CloudID)
+}
+
+// viewClientFor returns the Jira client for reading the calendar a session is
+// looking at. Jira filters results by the caller's own permissions, so while
+// impersonating it uses the viewed user's saved token: managers then see the
+// same entries that user sees, including on projects the manager cannot open.
+// Only use it for read-only queries scoped to the viewed user's own work
+// (their worklogs and Active Issues) - never for search, arbitrary issue
+// lookups or writes. limited is true when the viewed user has no usable token
+// and the viewer's own access was used instead, which can leave entries out.
+func viewClientFor(session *UserSession) (client *JiraClient, limited bool) {
+	if !isImpersonating(session) {
+		return jiraClientFor(session), false
+	}
+
+	token, err := accountTokens.validToken(session.ImpersonatingID)
+	if err != nil {
+		if !errors.Is(err, errNoToken) {
+			logrus.Warnf("Could not use %s's Jira access for %s's view, falling back to the viewer's: %v", session.ImpersonatingID, session.AccountID, err)
+		}
+		return jiraClientFor(session), true
+	}
+	return NewJiraClient(token, session.CloudID), false
+}
+
+// writeFileAtomic replaces a file in one step, so a crash mid-write cannot
+// leave a truncated file behind (a corrupt tokens.json would sign everyone out)
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 const sessionDataFile = "sessions.json"
@@ -433,7 +596,7 @@ func setAccountIDCookie(w http.ResponseWriter, accountID string) {
 		HttpOnly: true,
 		Secure:   strings.HasPrefix(viper.GetString("BASE_URL"), "https"),
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   86400 * 30, // 30 days
+		MaxAge:   authCookieMaxAge,
 	})
 }
 
@@ -476,7 +639,7 @@ func saveSessionData(accountID string, session *UserSession) {
 		return
 	}
 
-	if err := os.WriteFile(sessionDataFile, data, 0600); err != nil {
+	if err := writeFileAtomic(sessionDataFile, data, 0600); err != nil {
 		logrus.Errorf("Failed to save session data: %v", err)
 	}
 }
@@ -507,15 +670,10 @@ func tryRestoreSession(accountID, sessionID string) *UserSession {
 		return nil
 	}
 
-	// Load saved token
-	tokens := loadTokens()
-	token, ok := tokens.Tokens[accountID]
-	if !ok {
+	// A saved token is needed to act for the user (it is refreshed on use)
+	if accountTokens.get(accountID) == nil {
 		return nil
 	}
-
-	// Update session with current token
-	session.Token = token
 
 	// Re-register in memory
 	sessionsLock.Lock()

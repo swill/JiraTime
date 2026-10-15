@@ -31,8 +31,8 @@ HOURS_TARGET = 40
 # Issue filtering periods (optional)
 # How many weeks of activity to consider for "Active Issues"
 ACTIVE_ISSUES_WEEKS = 4
-# How many weeks Done issues stay visible (for logging time on recently completed work)
-DONE_ISSUES_WEEKS = 2
+# How many days Done issues stay available (for logging time on recently completed work)
+DONE_ISSUES_DAYS = 90
 
 # Super users - site administrator account IDs. Super users can impersonate
 # other users (view-only mode) and manage the in-app Manager list, which grants

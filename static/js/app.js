@@ -94,6 +94,102 @@
         return hours * 60 + mins;
     }
 
+    // Helper to convert minutes since midnight to FullCalendar's HH:MM:SS
+    // (hours may exceed 24 for overnight ranges)
+    function minutesToTime(minutes) {
+        const hours = String(Math.floor(minutes / 60)).padStart(2, '0');
+        const mins = String(minutes % 60).padStart(2, '0');
+        return `${hours}:${mins}:00`;
+    }
+
+    // Time range currently applied to the calendar - can be wider than the
+    // saved settings when entries fall outside them (see applyTimeRange)
+    let appliedTimeRange = null;
+
+    // Apply the saved time range, stretched to include any entries in the
+    // current view that would otherwise fall entirely outside it. FullCalendar
+    // does not draw those at all, so time logged at e.g. 11pm would be invisible.
+    function applyTimeRange() {
+        const configured = getCalendarTimeRange();
+        const configuredMin = timeToMinutes(configured.slotMinTime);
+        const configuredMax = timeToMinutes(configured.slotMaxTime);
+        const overnight = configuredMax > 24 * 60;
+        const view = calendar.view;
+        let minM = configuredMin;
+        let maxM = configuredMax;
+
+        calendar.getEvents().forEach(event => {
+            const start = event.start;
+            const end = event.end || new Date(start.getTime() + 30 * 60000);
+            if (end <= view.activeStart || start >= view.activeEnd) return;
+            if (isInVisibleHours(start, end, view, configuredMin, configuredMax)) return;
+
+            const startM = start.getHours() * 60 + start.getMinutes();
+            minM = Math.min(minM, startM);
+            if (!overnight) {
+                // Entries running past midnight show up to the end of their first day
+                const endM = startM + Math.round((end - start) / 60000);
+                maxM = Math.max(maxM, Math.min(endM, 24 * 60));
+            }
+            // Overnight ranges only ever miss entries in their daytime gap;
+            // starting the range earlier shows them in their own day's column
+        });
+
+        // Snap any expansion to the 30-minute slot grid
+        if (minM < configuredMin) minM = Math.floor(minM / 30) * 30;
+        if (maxM > configuredMax) maxM = Math.ceil(maxM / 30) * 30;
+
+        const range = { slotMinTime: minutesToTime(minM), slotMaxTime: minutesToTime(maxM) };
+        if (appliedTimeRange &&
+            appliedTimeRange.slotMinTime === range.slotMinTime &&
+            appliedTimeRange.slotMaxTime === range.slotMaxTime) {
+            return;
+        }
+
+        appliedTimeRange = range;
+        calendar.batchRendering(() => {
+            calendar.setOption('slotMinTime', range.slotMinTime);
+            calendar.setOption('slotMaxTime', range.slotMaxTime);
+        });
+    }
+
+    // Whether an entry overlaps the visible hours of any day column in the view
+    function isInVisibleHours(start, end, view, minM, maxM) {
+        for (let day = new Date(view.currentStart); day < view.currentEnd; day.setDate(day.getDate() + 1)) {
+            const columnStart = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, minM);
+            const columnEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, maxM);
+            if (start < columnEnd && end > columnStart) return true;
+        }
+        return false;
+    }
+
+    // Calendar view (Day/Week) chosen on desktop, remembered across reloads.
+    // Narrow (mobile) screens always use Day view without changing this.
+    const CALENDAR_VIEWS = ['timeGridWeek', 'timeGridDay'];
+
+    function getPreferredView() {
+        const view = localStorage.getItem('calendarView');
+        return CALENDAR_VIEWS.includes(view) ? view : 'timeGridWeek';
+    }
+
+    function savePreferredView(view) {
+        if (CALENDAR_VIEWS.includes(view)) {
+            localStorage.setItem('calendarView', view);
+        }
+    }
+
+    // fetch wrapper for API calls. A 401 means the session is gone (e.g. the Jira
+    // sign-in was revoked), so go back through login instead of leaving the page
+    // showing stale data; the returned promise never settles as the page unloads.
+    async function apiFetch(url, options) {
+        const response = await fetch(url, options);
+        if (response.status === 401) {
+            window.location.href = '/login';
+            return new Promise(() => {});
+        }
+        return response;
+    }
+
     // Loading state management
     let apiLoadingCount = 0;
     let calendarLoading = false;
@@ -149,9 +245,10 @@
     function initCalendar() {
         const calendarEl = document.getElementById('calendar');
         const timeRange = getCalendarTimeRange();
+        appliedTimeRange = timeRange;
 
         calendar = new FullCalendar.Calendar(calendarEl, {
-            initialView: window.innerWidth < 768 ? 'timeGridDay' : 'timeGridWeek',
+            initialView: isMobileView() ? 'timeGridDay' : getPreferredView(),
             headerToolbar: {
                 left: 'prev,next today',
                 center: 'title',
@@ -190,9 +287,24 @@
             select: handleSelect,
             dateClick: handleDateClick, // For mobile tap-to-create
 
-            // Update hours widget when the visible date range changes
             datesSet: function(info) {
-                updateHoursWidget(info.start);
+                // Remember the view picked on desktop (mobile forces Day view)
+                if (!isMobileView()) {
+                    savePreferredView(info.view.type);
+                }
+
+                // Also fires when options like slotMinTime change, so only
+                // reload the hours when the week actually changed
+                if (formatLocalDate(getWeekRange(info.start).start) !== hoursWidgetWeek) {
+                    updateHoursWidget(info.start);
+                }
+
+                applyTimeRange();
+            },
+
+            // Stretch the visible hours to fit entries once they are loaded
+            eventsSet: function() {
+                applyTimeRange();
             },
 
             // Event rendering
@@ -200,6 +312,12 @@
                 return {
                     html: `<div class="fc-event-title">${arg.event.title}</div>`
                 };
+            },
+
+            eventDidMount: function(arg) {
+                if (arg.event.extendedProps.projectArchived) {
+                    arg.el.title = ARCHIVED_ENTRY_NOTE;
+                }
             }
         });
 
@@ -211,11 +329,14 @@
         try {
             const start = info.startStr;
             const end = info.endStr;
-            const response = await fetch(`/api/events?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
+            const response = await apiFetch(`/api/events?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
 
             if (!response.ok) {
-                throw new Error('Failed to fetch events');
+                const text = await response.text();
+                throw new Error(extractErrorMessage(text));
             }
+
+            setViewLimited(response.headers.get('X-View-Limited') === '1');
 
             const events = await response.json();
             if (!events) {
@@ -223,27 +344,38 @@
                 return;
             }
 
-            const calendarEvents = events.map(e => ({
-                id: e.id,
-                title: e.title,
-                start: e.start,
-                end: e.end,
-                classNames: e.from_jiratime ? ['from-jiratime'] : ['from-external'],
-                extendedProps: {
-                    issueKey: e.issue_key,
-                    issueId: e.issue_id,
-                    worklogId: e.worklog_id,
-                    description: e.description,
-                    fromJiraTime: e.from_jiratime,
-                    parentKey: e.parent_key,
-                    subtaskTypeId: e.subtask_type_id,
-                    subtaskTypeName: e.subtask_type_name
+            const calendarEvents = events.map(e => {
+                const event = {
+                    id: e.id,
+                    title: e.title,
+                    start: e.start,
+                    end: e.end,
+                    classNames: e.from_jiratime ? ['from-jiratime'] : ['from-external'],
+                    extendedProps: {
+                        issueKey: e.issue_key,
+                        issueId: e.issue_id,
+                        worklogId: e.worklog_id,
+                        description: e.description,
+                        fromJiraTime: e.from_jiratime,
+                        parentKey: e.parent_key,
+                        subtaskTypeId: e.subtask_type_id,
+                        subtaskTypeName: e.subtask_type_name,
+                        projectArchived: !!e.project_archived
+                    }
+                };
+                if (e.project_archived) {
+                    // Jira makes archived projects read-only: no move, resize or copy
+                    event.editable = false;
+                    event.classNames.push('project-archived');
                 }
-            }));
+                return event;
+            });
 
             successCallback(calendarEvents);
         } catch (error) {
             console.error('Error fetching events:', error);
+            // Make it obvious the calendar may be incomplete
+            alert('Failed to load time entries: ' + error.message);
             failureCallback(error);
         }
     }
@@ -401,7 +533,7 @@
     }
 
     async function fetchSubtaskOptions(issueKey) {
-        const response = await fetch(`/api/issues/${encodeURIComponent(issueKey)}/subtask-options`);
+        const response = await apiFetch(`/api/issues/${encodeURIComponent(issueKey)}/subtask-options`);
         if (!response.ok) {
             throw new Error('Failed to fetch sub-task options');
         }
@@ -438,7 +570,7 @@
             if (subtaskTypeId) body.subtask_type_id = subtaskTypeId;
             if (subtaskKey) body.subtask_key = subtaskKey;
 
-            const response = await fetch('/api/events', {
+            const response = await apiFetch('/api/events', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
@@ -469,7 +601,7 @@
         showLoading();
         try {
             const eventId = `${event.extendedProps.issueKey}-${event.extendedProps.worklogId}`;
-            const response = await fetch(`/api/events/${encodeURIComponent(eventId)}`, {
+            const response = await apiFetch(`/api/events/${encodeURIComponent(eventId)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -503,7 +635,7 @@
         }
         showLoading();
         try {
-            const response = await fetch(`/api/events/${encodeURIComponent(eventId)}`, {
+            const response = await apiFetch(`/api/events/${encodeURIComponent(eventId)}`, {
                 method: 'DELETE'
             });
 
@@ -524,7 +656,9 @@
     }
 
     // Dialog Functions
+    const ARCHIVED_ENTRY_NOTE = 'This project is archived in Jira, so this entry can\'t be changed.';
     let currentEditingEvent = null;
+    let dialogReadOnly = false; // Open dialog only shows the entry (no save/delete)
     let dialogSubtaskOptions = null; // Sub-task options for the open dialog (null = not loaded)
     let selectedSubtaskTypeId = null;
     let selectedSubtaskKey = null;
@@ -566,6 +700,12 @@
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
+            // Enter in a field can still submit when Save is hidden
+            if (dialogReadOnly) {
+                dialog.close();
+                return;
+            }
+
             const eventId = document.getElementById('eventId').value;
             const start = new Date(document.getElementById('eventStart').value);
             const duration = parseInt(document.getElementById('eventDuration').value, 10);
@@ -595,7 +735,7 @@
                         if (subtaskKey) body.subtask_key = subtaskKey;
                     }
 
-                    const response = await fetch(`/api/events/${encodeURIComponent(eventId)}`, {
+                    const response = await apiFetch(`/api/events/${encodeURIComponent(eventId)}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(body)
@@ -632,6 +772,10 @@
         // Track the event being edited so we can unselect it on close
         currentEditingEvent = event;
 
+        // Entries on archived projects are read-only, like another user's calendar
+        const archived = !!event.extendedProps.projectArchived;
+        const readOnly = !!isViewOnlyMode() || archived;
+
         const eventId = `${event.extendedProps.issueKey}-${event.extendedProps.worklogId}`;
         document.getElementById('eventId').value = eventId;
         document.getElementById('eventIssue').value = event.title;
@@ -653,13 +797,26 @@
         } finally {
             hideLoading();
         }
-        renderSubtaskSection(dialogSubtaskOptions);
+        renderSubtaskSection(dialogSubtaskOptions, readOnly);
 
-        title.textContent = isViewOnlyMode() ? 'View Time Entry' : 'Edit Time Entry';
-        deleteBtn.style.display = isViewOnlyMode() ? 'none' : 'inline-block';
-        saveBtn.style.display = isViewOnlyMode() ? 'none' : 'inline-block';
+        title.textContent = readOnly ? 'View Time Entry' : 'Edit Time Entry';
+        deleteBtn.style.display = readOnly ? 'none' : 'inline-block';
+        saveBtn.style.display = readOnly ? 'none' : 'inline-block';
+        setDialogReadOnly(readOnly, archived ? ARCHIVED_ENTRY_NOTE : '');
 
         dialog.showModal();
+    }
+
+    // Lock the dialog fields and show why (an empty note hides it)
+    function setDialogReadOnly(readOnly, note) {
+        dialogReadOnly = readOnly;
+        ['eventStart', 'eventDuration', 'eventDescription'].forEach(id => {
+            document.getElementById(id).readOnly = readOnly;
+        });
+
+        const noteEl = document.getElementById('dialogNote');
+        noteEl.textContent = note;
+        noteEl.classList.toggle('hidden', !note);
     }
 
     // Open the dialog to create a new entry (used when the issue's project has
@@ -680,11 +837,12 @@
         document.getElementById('eventDuration').value = 30;
         document.getElementById('eventDescription').value = '';
 
-        renderSubtaskSection(options);
+        renderSubtaskSection(options, false);
 
         title.textContent = 'New Time Entry';
         deleteBtn.style.display = 'none';
         saveBtn.style.display = 'inline-block';
+        setDialogReadOnly(false, '');
 
         dialog.showModal();
     }
@@ -692,8 +850,8 @@
     // Render the configured sub-task checkboxes (billable or non-billable, per
     // the project's mode). Type checkboxes act like toggleable radios (one at a
     // time); selecting a type reveals its existing sub-tasks, where at most one
-    // can be picked.
-    function renderSubtaskSection(options) {
+    // can be picked. Read-only dialogs show the choices disabled.
+    function renderSubtaskSection(options, readOnly) {
         const section = document.getElementById('subtaskSection');
         const label = document.getElementById('subtaskSectionLabel');
         const container = document.getElementById('subtaskTypes');
@@ -714,7 +872,7 @@
                 : 'Billable via Sub-task';
         }
 
-        const disabled = !!isViewOnlyMode();
+        const disabled = !!readOnly;
 
         options.subtask_types.forEach(type => {
             const typeEl = document.createElement('div');
@@ -938,9 +1096,7 @@
             settingsDialog.close();
 
             // Apply new time range to calendar
-            const timeRange = getCalendarTimeRange();
-            calendar.setOption('slotMinTime', timeRange.slotMinTime);
-            calendar.setOption('slotMaxTime', timeRange.slotMaxTime);
+            applyTimeRange();
         });
     }
 
@@ -965,7 +1121,7 @@
 
             managerSearchTimeout = setTimeout(async () => {
                 try {
-                    const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`);
+                    const response = await apiFetch(`/api/users/search?q=${encodeURIComponent(query)}`);
                     if (response.ok) {
                         renderManagerSearchResults(await response.json());
                     }
@@ -985,7 +1141,7 @@
 
     async function loadManagerList() {
         try {
-            const response = await fetch('/api/managers');
+            const response = await apiFetch('/api/managers');
             if (!response.ok) {
                 throw new Error('Failed to fetch managers');
             }
@@ -1068,7 +1224,7 @@
         document.getElementById('managerSearchResults').classList.add('hidden');
 
         try {
-            const response = await fetch('/api/managers', {
+            const response = await apiFetch('/api/managers', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1095,7 +1251,7 @@
         }
 
         try {
-            const response = await fetch(`/api/managers/${encodeURIComponent(manager.account_id)}`, {
+            const response = await apiFetch(`/api/managers/${encodeURIComponent(manager.account_id)}`, {
                 method: 'DELETE'
             });
 
@@ -1124,7 +1280,7 @@
         refreshBtn.addEventListener('click', async () => {
             showLoading();
             try {
-                await fetch('/api/refresh', { method: 'POST' });
+                await apiFetch('/api/refresh', { method: 'POST' });
                 await loadIssues();
                 calendar.refetchEvents();
                 updateHoursWidget(calendar ? calendar.view.activeStart : undefined);
@@ -1136,7 +1292,7 @@
 
     async function loadUserInfo() {
         try {
-            const response = await fetch('/api/user');
+            const response = await apiFetch('/api/user');
             if (response.ok) {
                 currentUser = await response.json();
                 jiraSiteURL = currentUser.site_url || '';
@@ -1206,7 +1362,7 @@
 
             impersonateSearchTimeout = setTimeout(async () => {
                 try {
-                    const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`);
+                    const response = await apiFetch(`/api/users/search?q=${encodeURIComponent(query)}`);
                     if (response.ok) {
                         const users = await response.json();
                         renderImpersonateResults(users);
@@ -1251,7 +1407,7 @@
     async function startImpersonation(user) {
         showLoading();
         try {
-            const response = await fetch('/api/impersonate', {
+            const response = await apiFetch('/api/impersonate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1284,7 +1440,7 @@
     async function stopImpersonation() {
         showLoading();
         try {
-            const response = await fetch('/api/impersonate/stop', {
+            const response = await apiFetch('/api/impersonate/stop', {
                 method: 'POST'
             });
 
@@ -1305,13 +1461,22 @@
         }
     }
 
+    // Shown when the server could not use the viewed user's own Jira access,
+    // so entries on projects the viewer can't open are missing
+    function setViewLimited(limited) {
+        const el = document.getElementById('impersonationLimited');
+        const name = (currentUser && currentUser.impersonating_name) || 'This user';
+        el.textContent = `Showing only entries you can open in Jira. ${name} needs to sign in to JiraTime for their full calendar to show here.`;
+        el.classList.toggle('hidden', !limited);
+    }
+
     function isViewOnlyMode() {
         return currentUser && currentUser.impersonating_id;
     }
 
     async function loadIssues() {
         try {
-            const response = await fetch('/api/issues');
+            const response = await apiFetch('/api/issues');
             if (!response.ok) {
                 throw new Error('Failed to fetch issues');
             }
@@ -1534,7 +1699,7 @@
 
     async function searchJiraIssues(query) {
         try {
-            const response = await fetch(`/api/issues/search?q=${encodeURIComponent(query)}`);
+            const response = await apiFetch(`/api/issues/search?q=${encodeURIComponent(query)}`);
             if (!response.ok) {
                 throw new Error('Search failed');
             }
@@ -1587,12 +1752,35 @@
     }
 
     // Hours Widget
-    async function updateHoursWidget(weekDate) {
+    let hoursWidgetWeek = null; // Local date (YYYY-MM-DD) of the week shown
+
+    // Monday-to-Monday week (local time) containing the given date, matching
+    // the calendar's firstDay
+    function getWeekRange(date) {
+        const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        start.setDate(start.getDate() - (start.getDay() + 6) % 7);
+        const end = new Date(start);
+        end.setDate(end.getDate() + 7);
+        return { start, end };
+    }
+
+    function formatLocalDate(date) {
+        return formatDateTimeLocal(date).slice(0, 10);
+    }
+
+    // Hours to at most 2 decimal places without trailing zeros, so 15-minute
+    // entries add up exactly (0.25, 7.5, 32)
+    function formatHours(hours) {
+        return String(Math.round(hours * 100) / 100);
+    }
+
+    async function updateHoursWidget(viewDate) {
+        // Totals cover the whole week, even when viewing a single day
+        const week = getWeekRange(viewDate || new Date());
+        hoursWidgetWeek = formatLocalDate(week.start);
+
         try {
-            const url = weekDate
-                ? `/api/hours?week=${weekDate.toISOString().slice(0, 10)}`
-                : '/api/hours';
-            const response = await fetch(url);
+            const response = await apiFetch(`/api/hours?start=${encodeURIComponent(calendar.formatIso(week.start))}&end=${encodeURIComponent(calendar.formatIso(week.end))}`);
             if (!response.ok) {
                 throw new Error('Failed to fetch hours');
             }
@@ -1602,7 +1790,7 @@
             const loggedEl = widget.querySelector('.hours-logged');
             const targetEl = widget.querySelector('.hours-target');
 
-            loggedEl.textContent = data.hours_logged.toFixed(1);
+            loggedEl.textContent = formatHours(data.hours_logged);
             targetEl.textContent = data.hours_target;
 
             widget.classList.remove('under', 'met');
@@ -1617,19 +1805,30 @@
     }
 
     // Mobile Support
+    let wasMobileView = null;
+
+    // Runs on every resize event, but only acts when crossing the mobile
+    // breakpoint - otherwise any resize would undo the user's view choice
     function checkMobileView() {
+        const isMobile = isMobileView();
+        if (isMobile === wasMobileView) {
+            return;
+        }
+        wasMobileView = isMobile;
+
         const sidebar = document.getElementById('sidebar');
-        const isMobile = window.innerWidth < 768;
 
         if (isMobile) {
             sidebar.classList.remove('open');
-            if (calendar) {
+            if (calendar && calendar.view.type !== 'timeGridDay') {
                 calendar.changeView('timeGridDay');
             }
         } else {
             sidebar.classList.add('open');
-            if (calendar && calendar.view.type === 'timeGridDay') {
-                calendar.changeView('timeGridWeek');
+            // Back on a wide screen: restore the view the user picked
+            const preferredView = getPreferredView();
+            if (calendar && calendar.view.type !== preferredView) {
+                calendar.changeView(preferredView);
             }
         }
     }
