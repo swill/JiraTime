@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -68,6 +71,13 @@ const maxReadRetries = 3
 // limiting (429) or briefly unavailable (502/503/504). Writes are not retried
 // since repeating one could duplicate a worklog.
 func (c *JiraClient) doReadRequest(ctx context.Context, method, endpoint string, body interface{}) (*http.Response, error) {
+	return c.doRetryingRequest(ctx, method, endpoint, body)
+}
+
+// doRetryingRequest retries a call that is safe to repeat: reads, and the
+// deletes that undo a half-finished change, which must not give up on a
+// momentary rate limit and leave time counted twice
+func (c *JiraClient) doRetryingRequest(ctx context.Context, method, endpoint string, body interface{}) (*http.Response, error) {
 	for attempt := 0; ; attempt++ {
 		resp, err := c.doRequest(ctx, method, endpoint, body)
 		if err != nil || attempt == maxReadRetries || !isRetryableStatus(resp.StatusCode) {
@@ -177,6 +187,12 @@ func doneIssuesJQL() string {
 	return fmt.Sprintf("(statusCategory != Done OR statusCategoryChangedDate >= -%dd)", viper.GetInt("DONE_ISSUES_DAYS"))
 }
 
+// jqlString escapes text for use inside a double-quoted JQL string, so a
+// quote in a search term cannot end the string and change the query
+func jqlString(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s)
+}
+
 // SearchUsers searches for users by query string
 func (c *JiraClient) SearchUsers(ctx context.Context, query string) ([]JiraUser, error) {
 	endpoint := fmt.Sprintf("/user/search?query=%s&maxResults=20", query)
@@ -269,14 +285,20 @@ func (c *JiraClient) GetMyIssues(ctx context.Context, accountID string) ([]Issue
 	return result, nil
 }
 
-func (c *JiraClient) SearchIssues(ctx context.Context, query string) ([]Issue, error) {
-	// Search for issues by text query (summary, key, or description)
-	// Done issues stay searchable for DONE_ISSUES_DAYS after completion
-
+// SearchIssues searches for issues by text query (summary, key, or
+// description). Done issues stay searchable for DONE_ISSUES_DAYS after
+// completion, unless allDone is set: SDMs correcting time after the fact
+// need to find issues that closed long ago.
+func (c *JiraClient) SearchIssues(ctx context.Context, query string, allDone bool) ([]Issue, error) {
 	// Use wildcard (*) for partial matching in summary, key, and description
-	jql := fmt.Sprintf("(summary ~ \"%s*\" OR key ~ \"%s*\" OR description ~ \"%s*\") AND %s ORDER BY updated DESC", query, query, query, doneIssuesJQL())
+	q := jqlString(query)
+	jql := fmt.Sprintf("(summary ~ \"%s*\" OR key ~ \"%s*\" OR description ~ \"%s*\")", q, q, q)
+	if !allDone {
+		jql += " AND " + doneIssuesJQL()
+	}
+	jql += " ORDER BY updated DESC"
 
-	results, err := c.searchIssues(ctx, jql, []string{"summary", "project", "issuetype"}, 100, excludeArchivedProjects)
+	results, err := c.searchIssues(ctx, jql, []string{"summary", "project", "issuetype", "parent"}, 100, excludeArchivedProjects)
 	if err != nil {
 		return nil, err
 	}
@@ -287,12 +309,17 @@ func (c *JiraClient) SearchIssues(ctx context.Context, query string) ([]Issue, e
 			continue
 		}
 
-		issues = append(issues, Issue{
+		found := Issue{
 			ID:         issue.ID,
 			Key:        issue.Key,
 			Summary:    issue.Fields.Summary,
 			ProjectKey: issue.Fields.Project.Key,
-		})
+		}
+		if issue.Fields.Parent != nil {
+			found.ParentKey = issue.Fields.Parent.Key
+			found.ParentSummary = issue.Fields.Parent.Fields.Summary
+		}
+		issues = append(issues, found)
 	}
 
 	return issues, nil
@@ -343,12 +370,34 @@ func (c *JiraClient) GetWorklogs(ctx context.Context, issueKey string, startedAf
 // hasProperty reports whether a worklog carries the given property (requires
 // the worklog to have been fetched with expand=properties)
 func (wl *JiraWorklog) hasProperty(key string) bool {
+	return wl.property(key) != nil
+}
+
+// property returns the value of a worklog property, or nil if it is not set
+// (requires the worklog to have been fetched with expand=properties)
+func (wl *JiraWorklog) property(key string) json.RawMessage {
 	for _, p := range wl.Properties {
 		if p.Key == key {
-			return true
+			if p.Value == nil {
+				return json.RawMessage("null")
+			}
+			return p.Value
 		}
 	}
-	return false
+	return nil
+}
+
+// sdmChange returns the last SDM change recorded on a worklog, if any
+func (wl *JiraWorklog) sdmChange() *SDMChange {
+	value := wl.property(sdmPropertyKey)
+	if value == nil {
+		return nil
+	}
+	var change SDMChange
+	if err := json.Unmarshal(value, &change); err != nil || change.AccountID == "" {
+		return nil
+	}
+	return &change
 }
 
 func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time.Time, accountID string) ([]CalendarEvent, error) {
@@ -425,7 +474,7 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 				}
 			}
 
-			events = append(events, CalendarEvent{
+			event := CalendarEvent{
 				ID:              fmt.Sprintf("%s-%s", issue.Key, wl.ID),
 				Title:           title,
 				Start:           startTime,
@@ -438,7 +487,16 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 				ParentKey:       parentKey,
 				SubtaskTypeID:   subtaskTypeID,
 				SubtaskTypeName: subtaskTypeName,
-			})
+			}
+			if change := wl.sdmChange(); change != nil {
+				event.SDMChangedBy = change.DisplayName
+				if event.SDMChangedBy == "" {
+					event.SDMChangedBy = "an SDM"
+				}
+				at := change.At
+				event.SDMChangedAt = &at
+			}
+			events = append(events, event)
 		}
 
 		// Issues in archived projects are read-only in Jira, so their entries
@@ -458,17 +516,49 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 	return events, nil
 }
 
-func (c *JiraClient) CreateWorklog(ctx context.Context, issueKey string, started time.Time, durationSeconds int, description string) (*JiraWorklog, error) {
-	endpoint := fmt.Sprintf("/issue/%s/worklog", issueKey)
-
+// worklogBody builds a worklog create/update body. comment is the Atlassian
+// Document Format comment (or nil to leave it out).
+func worklogBody(started string, durationSeconds int, comment interface{}) map[string]interface{} {
 	body := map[string]interface{}{
-		"started":          formatJiraDateTime(started),
+		"started":          started,
 		"timeSpentSeconds": durationSeconds,
 	}
-
-	if description != "" {
-		body["comment"] = buildADFComment(description)
+	if comment != nil {
+		body["comment"] = comment
 	}
+	return body
+}
+
+// descriptionComment converts the dialog's plain-text description into a
+// worklog comment, or nil when there is none
+func descriptionComment(description string) interface{} {
+	if description == "" {
+		return nil
+	}
+	return buildADFComment(description)
+}
+
+// rawComment returns a stored comment for writing back unchanged, or nil
+// when there is none
+func rawComment(comment json.RawMessage) interface{} {
+	if len(comment) == 0 || string(comment) == "null" {
+		return nil
+	}
+	return comment
+}
+
+func (c *JiraClient) CreateWorklog(ctx context.Context, issueKey string, started time.Time, durationSeconds int, description string) (*JiraWorklog, error) {
+	return c.createWorklog(ctx, issueKey, worklogBody(formatJiraDateTime(started), durationSeconds, descriptionComment(description)))
+}
+
+// CreateWorklogWithComment creates a worklog with a comment copied as-is from
+// another worklog (used when splitting one)
+func (c *JiraClient) CreateWorklogWithComment(ctx context.Context, issueKey string, started time.Time, durationSeconds int, comment json.RawMessage) (*JiraWorklog, error) {
+	return c.createWorklog(ctx, issueKey, worklogBody(formatJiraDateTime(started), durationSeconds, rawComment(comment)))
+}
+
+func (c *JiraClient) createWorklog(ctx context.Context, issueKey string, body map[string]interface{}) (*JiraWorklog, error) {
+	endpoint := fmt.Sprintf("/issue/%s/worklog", issueKey)
 
 	resp, err := c.doRequest(ctx, "POST", endpoint, body)
 	if err != nil {
@@ -490,16 +580,19 @@ func (c *JiraClient) CreateWorklog(ctx context.Context, issueKey string, started
 }
 
 func (c *JiraClient) UpdateWorklog(ctx context.Context, issueKey, worklogID string, started time.Time, durationSeconds int, description string) (*JiraWorklog, error) {
+	return c.putWorklog(ctx, issueKey, worklogID, worklogBody(formatJiraDateTime(started), durationSeconds, descriptionComment(description)))
+}
+
+// ResizeWorklog changes a worklog's duration, writing its start and comment
+// back exactly as fetched (used when splitting one)
+func (c *JiraClient) ResizeWorklog(ctx context.Context, issueKey string, wl *JiraWorklog, durationSeconds int) error {
+	_, err := c.putWorklog(ctx, issueKey, wl.ID, worklogBody(wl.Started, durationSeconds, rawComment(wl.RawComment)))
+	return err
+}
+
+// putWorklog updates a worklog with the given body
+func (c *JiraClient) putWorklog(ctx context.Context, issueKey, worklogID string, body map[string]interface{}) (*JiraWorklog, error) {
 	endpoint := fmt.Sprintf("/issue/%s/worklog/%s", issueKey, worklogID)
-
-	body := map[string]interface{}{
-		"started":          formatJiraDateTime(started),
-		"timeSpentSeconds": durationSeconds,
-	}
-
-	if description != "" {
-		body["comment"] = buildADFComment(description)
-	}
 
 	resp, err := c.doRequest(ctx, "PUT", endpoint, body)
 	if err != nil {
@@ -521,13 +614,32 @@ func (c *JiraClient) UpdateWorklog(ctx context.Context, issueKey, worklogID stri
 }
 
 func (c *JiraClient) DeleteWorklog(ctx context.Context, issueKey, worklogID string) error {
+	return c.deleteWorklog(ctx, issueKey, worklogID, false)
+}
+
+// RollbackWorklog deletes a worklog that a half-finished change just created.
+// It retries when Jira is briefly unavailable, and a worklog that is already
+// gone counts as removed.
+func (c *JiraClient) RollbackWorklog(ctx context.Context, issueKey, worklogID string) error {
+	return c.deleteWorklog(ctx, issueKey, worklogID, true)
+}
+
+func (c *JiraClient) deleteWorklog(ctx context.Context, issueKey, worklogID string, rollback bool) error {
 	endpoint := fmt.Sprintf("/issue/%s/worklog/%s", issueKey, worklogID)
 
-	resp, err := c.doRequest(ctx, "DELETE", endpoint, nil)
+	do := c.doRequest
+	if rollback {
+		do = c.doRetryingRequest
+	}
+	resp, err := do(ctx, "DELETE", endpoint, nil)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound && rollback {
+		return nil
+	}
 
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
@@ -535,6 +647,94 @@ func (c *JiraClient) DeleteWorklog(ctx context.Context, issueKey, worklogID stri
 	}
 
 	return nil
+}
+
+// GetWorklog fetches one worklog with its properties and its comment as
+// stored, so it can be checked before changing it and restored afterwards.
+// A worklog that is not on the issue (or not visible) is errIssueNotFound.
+func (c *JiraClient) GetWorklog(ctx context.Context, issueKey, worklogID string) (*JiraWorklog, error) {
+	endpoint := fmt.Sprintf("/issue/%s/worklog/%s?expand=properties", issueKey, worklogID)
+
+	resp, err := c.doReadRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errIssueNotFound
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get worklog failed: %d %s", resp.StatusCode, data)
+	}
+
+	var worklog JiraWorklog
+	if err := json.Unmarshal(data, &worklog); err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Comment json.RawMessage `json:"comment"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	worklog.RawComment = raw.Comment
+
+	return &worklog, nil
+}
+
+// Jira permission keys checked before multi-step SDM changes
+const (
+	permEditAllWorklogs   = "EDIT_ALL_WORKLOGS"
+	permDeleteAllWorklogs = "DELETE_ALL_WORKLOGS"
+	permWorkOnIssues      = "WORK_ON_ISSUES"
+)
+
+// permissionNames are how Jira labels the permissions in its admin screens
+var permissionNames = map[string]string{
+	permEditAllWorklogs:   "Edit All Worklogs",
+	permDeleteAllWorklogs: "Delete All Worklogs",
+	permWorkOnIssues:      "Work On Issues",
+}
+
+// MissingPermissions returns which of the given permissions the client's user
+// lacks on an issue (project permissions, as they apply to that issue)
+func (c *JiraClient) MissingPermissions(ctx context.Context, issueKey string, permissions ...string) ([]string, error) {
+	endpoint := fmt.Sprintf("/mypermissions?issueKey=%s&permissions=%s", issueKey, strings.Join(permissions, ","))
+
+	resp, err := c.doReadRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("check permissions failed: %d %s", resp.StatusCode, body)
+	}
+
+	var result struct {
+		Permissions map[string]struct {
+			HavePermission bool `json:"havePermission"`
+		} `json:"permissions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	var missing []string
+	for _, p := range permissions {
+		if !result.Permissions[p].HavePermission {
+			missing = append(missing, p)
+		}
+	}
+	return missing, nil
 }
 
 // parseJiraDateTime parses Jira's datetime format: 2021-01-17T12:34:00.000+0000
@@ -632,6 +832,74 @@ func (b *flexBool) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// flexStrings decodes a list of IDs that a loosely-coupled metadata source may
+// instead store as a single string, an empty string, null, or a list of
+// numbers. Like flexBool, it keeps one unexpectedly-typed field from failing
+// the whole property decode (which would hide every sub-task option).
+type flexStrings []string
+
+func (f *flexStrings) UnmarshalJSON(data []byte) error {
+	var list []interface{}
+	if err := json.Unmarshal(data, &list); err == nil {
+		var out []string
+		for _, v := range list {
+			switch v := v.(type) {
+			case string:
+				if v != "" {
+					out = append(out, v)
+				}
+			case float64:
+				out = append(out, strconv.FormatFloat(v, 'f', -1, 64))
+			}
+		}
+		*f = out
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil && single != "" {
+		*f = flexStrings{single}
+		return nil
+	}
+	// null, "" or any other shape: nothing configured
+	*f = nil
+	return nil
+}
+
+// Sub-task fields JiraTime reads from the jirametadata property
+var knownSubtaskFields = map[string]bool{
+	"billable_subtasks":     true,
+	"non_billable_subtasks": true,
+	"nonbillable_subtasks":  true,
+}
+
+// loggedOnce remembers configuration problems already logged, so each shows
+// once rather than on every calendar load
+var loggedOnce sync.Map
+
+func warnOnce(key, format string, args ...interface{}) {
+	if _, seen := loggedOnce.LoadOrStore(key, true); !seen {
+		logrus.Warnf(format, args...)
+	}
+}
+
+// warnUnreadSubtaskFields logs jirametadata fields that look like sub-task
+// settings but aren't read, e.g. when a JiraMetadata field label produces a
+// different property key (JiraMetadata lowercases the label, drops anything
+// but letters, digits and spaces, then turns spaces into underscores)
+func warnUnreadSubtaskFields(projectKey string, data []byte) {
+	var raw struct {
+		Value map[string]json.RawMessage `json:"value"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return
+	}
+	for key := range raw.Value {
+		if strings.Contains(key, "subtask") && !knownSubtaskFields[key] {
+			warnOnce("field/"+projectKey+"/"+key, "Project %s: jirametadata field %q looks like sub-task settings but JiraTime only reads billable_subtasks, non_billable_subtasks and nonbillable_subtasks, so it is ignored", projectKey, key)
+		}
+	}
+}
+
 // GetProjectArchived reports whether a project is archived. A project that
 // cannot be found is reported as archived: this is only asked about projects
 // whose issues were just read, so a missing project means Jira is hiding it
@@ -700,24 +968,29 @@ func (c *JiraClient) GetProjectSubtaskConfig(ctx context.Context, projectKey str
 		return ProjectSubtaskConfig{}, nil
 	}
 
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ProjectSubtaskConfig{}, err
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return ProjectSubtaskConfig{}, fmt.Errorf("get project property failed: %d %s", resp.StatusCode, body)
+		return ProjectSubtaskConfig{}, fmt.Errorf("get project property failed: %d %s", resp.StatusCode, data)
 	}
 
 	var prop struct {
 		Value struct {
-			Billable            flexBool `json:"billable"`
-			BillableSubtasks    []string `json:"billable_subtasks"`
-			NonBillableSubtasks []string `json:"non_billable_subtasks"`
+			Billable            flexBool    `json:"billable"`
+			BillableSubtasks    flexStrings `json:"billable_subtasks"`
+			NonBillableSubtasks flexStrings `json:"non_billable_subtasks"`
 			// Alias for admins who label the field "Non-Billable Subtasks":
 			// JiraMetadata strips the hyphen when deriving the property key
-			NonBillableSubtasksAlt []string `json:"nonbillable_subtasks"`
+			NonBillableSubtasksAlt flexStrings `json:"nonbillable_subtasks"`
 		} `json:"value"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&prop); err != nil {
-		return ProjectSubtaskConfig{}, err
+	if err := json.Unmarshal(data, &prop); err != nil {
+		return ProjectSubtaskConfig{}, fmt.Errorf("parse jirametadata property: %w", err)
 	}
+	warnUnreadSubtaskFields(projectKey, data)
 
 	nonBillable := prop.Value.NonBillableSubtasks
 	if len(nonBillable) == 0 {
@@ -859,6 +1132,7 @@ func (c *JiraClient) GetConfiguredSubtaskTypes(ctx context.Context, projectKey s
 			// project's sub-task types
 			name := globalNames[id]
 			if name == "" {
+				warnOnce("type/"+projectKey+"/"+id, "Project %s: configured sub-task type %s isn't an issue type JiraTime can see, so it isn't offered", projectKey, id)
 				continue
 			}
 			for i, pt := range projectTypes {
@@ -867,9 +1141,13 @@ func (c *JiraClient) GetConfiguredSubtaskTypes(ctx context.Context, projectKey s
 					break
 				}
 			}
+			if match == nil {
+				warnOnce("type/"+projectKey+"/"+id, "Project %s: configured sub-task type %s (%s) isn't a sub-task type in the project's work type scheme, so it isn't offered; add it under Project settings > Work types", projectKey, id, name)
+				continue
+			}
 		}
 
-		if match == nil || seen[match.ID] {
+		if seen[match.ID] {
 			continue
 		}
 		seen[match.ID] = true
@@ -913,6 +1191,150 @@ func (c *JiraClient) GetIssueTypeNames(ctx context.Context) (map[string]string, 
 	}
 
 	return names, nil
+}
+
+// Each level of the Move-to tree holds at most this many issues, most
+// recently updated first; search reaches the rest
+const hierarchyLimit = 500
+
+var hierarchyFields = []string{"summary", "issuetype", "status", "subtasks"}
+
+// projectKeyPattern matches Jira project keys
+var projectKeyPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+
+// GetProjectEpicTypes returns a project and the IDs of its Epic-level issue
+// types (hierarchy level 1). Looked up by level, not name, so renamed Epic
+// types still count; levels above Epic (e.g. Initiatives) are left out.
+func (c *JiraClient) GetProjectEpicTypes(ctx context.Context, projectKey string) (Project, []string, error) {
+	endpoint := fmt.Sprintf("/project/%s?expand=issueTypes", projectKey)
+
+	resp, err := c.doReadRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return Project{}, nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return Project{}, nil, errIssueNotFound
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return Project{}, nil, fmt.Errorf("get project failed: %d %s", resp.StatusCode, body)
+	}
+
+	var project struct {
+		ID         string             `json:"id"`
+		Key        string             `json:"key"`
+		Name       string             `json:"name"`
+		IssueTypes []JiraIssueTypeRef `json:"issueTypes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&project); err != nil {
+		return Project{}, nil, err
+	}
+
+	var epicTypes []string
+	for _, t := range project.IssueTypes {
+		if t.HierarchyLevel == 1 {
+			epicTypes = append(epicTypes, t.ID)
+		}
+	}
+
+	return Project{ID: project.ID, Key: project.Key, Name: project.Name}, epicTypes, nil
+}
+
+// GetProjectEpics returns the top level of a project's Move-to tree: its
+// epics, open ones first. Done epics are included whatever their age, since
+// SDMs correct time after the fact.
+func (c *JiraClient) GetProjectEpics(ctx context.Context, projectKey string) (HierarchyRes, error) {
+	project, epicTypes, err := c.GetProjectEpicTypes(ctx, projectKey)
+	if err != nil {
+		return HierarchyRes{}, err
+	}
+
+	res := HierarchyRes{Project: &project, Epics: []HierarchyNode{}}
+	if len(epicTypes) == 0 {
+		return res, nil
+	}
+
+	jql := fmt.Sprintf("project = \"%s\" AND issuetype in (%s) ORDER BY updated DESC", projectKey, strings.Join(epicTypes, ", "))
+	issues, err := c.searchIssues(ctx, jql, hierarchyFields, hierarchyLimit+1, excludeArchivedProjects)
+	if err != nil {
+		return HierarchyRes{}, err
+	}
+
+	res.Epics, res.Truncated = hierarchyNodes(issues, true)
+	return res, nil
+}
+
+// GetChildIssues returns an epic's child issues with their sub-tasks. Children
+// in other projects are included.
+func (c *JiraClient) GetChildIssues(ctx context.Context, parentKey string) (HierarchyRes, error) {
+	jql := fmt.Sprintf("parent = \"%s\" ORDER BY updated DESC", parentKey)
+	issues, err := c.searchIssues(ctx, jql, hierarchyFields, hierarchyLimit+1, excludeArchivedProjects)
+	if err != nil {
+		return HierarchyRes{}, err
+	}
+
+	res := HierarchyRes{}
+	res.Issues, res.Truncated = hierarchyNodes(issues, false)
+	return res, nil
+}
+
+// GetIssuesWithoutEpic returns a project's issues that have no parent, with
+// their sub-tasks (the tree's "No epic" group; all of a JSM project's requests)
+func (c *JiraClient) GetIssuesWithoutEpic(ctx context.Context, projectKey string) (HierarchyRes, error) {
+	jql := fmt.Sprintf("project = \"%s\" AND issuetype in standardIssueTypes() AND parent is EMPTY ORDER BY updated DESC", projectKey)
+	issues, err := c.searchIssues(ctx, jql, hierarchyFields, hierarchyLimit+1, excludeArchivedProjects)
+	if err != nil {
+		return HierarchyRes{}, err
+	}
+
+	res := HierarchyRes{}
+	res.Issues, res.Truncated = hierarchyNodes(issues, false)
+	return res, nil
+}
+
+// hierarchyNodes converts one tree level's search results into nodes, open
+// issues first (most recently updated first within each group). The level
+// holds either epics or standard issues; anything else is skipped. truncated
+// reports whether the search returned more than hierarchyLimit issues.
+func hierarchyNodes(issues []JiraSearchIssue, epics bool) (nodes []HierarchyNode, truncated bool) {
+	if len(issues) > hierarchyLimit {
+		issues = issues[:hierarchyLimit]
+		truncated = true
+	}
+
+	nodes = []HierarchyNode{}
+	for _, issue := range issues {
+		if issue.Fields.IssueType.Subtask || isEpicLevel(issue.Fields.IssueType) != epics || issue.Fields.IssueType.HierarchyLevel > 1 {
+			continue
+		}
+
+		node := HierarchyNode{
+			Key:     issue.Key,
+			Summary: issue.Fields.Summary,
+			Status:  issue.Fields.Status.Name,
+			Done:    issue.Fields.Status.StatusCategory.Key == "done",
+		}
+		if !epics {
+			for _, st := range issue.Fields.Subtasks {
+				node.Subtasks = append(node.Subtasks, HierarchyNode{
+					Key:     st.Key,
+					Summary: st.Fields.Summary,
+					Status:  st.Fields.Status.Name,
+					Done:    st.Fields.Status.StatusCategory.Key == "done",
+				})
+			}
+		}
+		nodes = append(nodes, node)
+	}
+
+	sort.SliceStable(nodes, func(i, j int) bool {
+		return !nodes[i].Done && nodes[j].Done
+	})
+
+	return nodes, truncated
 }
 
 // GetIssueDetail fetches a single issue with hierarchy fields (issue type, parent, sub-tasks)

@@ -15,6 +15,7 @@ A calendar-based time tracking application for Jira Cloud. Log work directly fro
 - **Source Tracking**: Visual indicator distinguishes JiraTime entries from those created in Jira/JSM
 - **Billable / Non-billable Sub-tasks**: Reclassify logged time against configured sub-task types (via the JiraMetadata app's `billable_subtasks` / `non_billable_subtasks` project properties)
 - **Manager Impersonation**: Managers (administered in-app by super users) can view team members' calendars in read-only mode
+- **SDM Editing**: Service Delivery Managers can correct team members' time while viewing it (edit, move to another issue or sub-task, split, add), with the team member kept as the worklog author
 - **Configurable Time Range**: Adjust visible hours for different shifts (day, night, custom)
 - **Recent Issues**: Quick access to your 5 most recently used issues
 - **External Links**: Click the link icon on any issue to open it in Jira
@@ -260,7 +261,7 @@ A project is billable *or* non-billable, so it uses one mode or the other — ne
 - If a type is selected but no specific sub-task is ticked, the time goes to a sub-task **named after the type** (e.g. a "Non-billable Work" sub-task) — reused if it already exists under the parent, created if not.
 - If no type is selected, the time is logged against the parent issue as before.
 - Calendar events whose worklog lives on a configured sub-task are titled with the **parent issue plus the type** (e.g. `[PROJ-12] Fix login • Non-billable Work`), and reopening them shows the association pre-checked — including time logged directly in Jira/JSM on such a sub-task.
-- Changing the checkboxes on an existing entry **moves** the worklog (to the parent when unticked, or to the selected sub-task). Because Jira has no worklog-move API, this is done as create-then-delete: the copy is created first and rolled back if the delete fails, so time is never lost or double-counted. A moved entry counts as JiraTime-created (solid border), even if it was originally logged in Jira.
+- Changing the checkboxes on an existing entry **moves** the worklog (to the parent when unticked, or to the selected sub-task). On your own calendar this is done as create-then-delete (Jira's worklog move API isn't used, because reporting that syncs from Jira's worklog change feeds doesn't see its moves): the copy is created first and rolled back if the delete fails, so time is never lost or double-counted. A moved entry counts as JiraTime-created (solid border), even if it was originally logged in Jira. SDMs' moves work the same way, using two sign-ins; see [SDM Editing](#sdm-editing).
 - Dragging a configured sub-task itself from the sidebar resolves it to its parent, with the sub-task pre-checked in the dialog.
 
 Projects with neither field behave exactly as before — dragging creates the entry immediately and the dialog shows no checkboxes. The property and issue-type lookups are cached for 15 minutes; use the sidebar **Refresh** button to pick up configuration changes immediately.
@@ -280,11 +281,14 @@ The three steps must happen in this order — skipping or reordering the first i
 
 ### Manager Impersonation
 
-Managers and super users can view team members' calendars in read-only mode to review time entries without logging in as that user.
+Managers, SDMs and super users can view team members' calendars to review time entries without logging in as that user.
 
-There are two roles:
-- **Super users** are site administrators defined in `config.toml` (`SUPER_USERS`). They can impersonate other users and are the only ones who can manage the Manager list.
-- **Managers** are administered inside the app by super users and get the same read-only impersonation ability. The list is persisted in `managers.json` next to the binary.
+There are three roles:
+- **Super users** are site administrators defined in `config.toml` (`SUPER_USERS`). They can impersonate other users, change their time like an SDM, and are the only ones who can manage the Manager list.
+- **Managers** are administered inside the app by super users and can view other users' calendars read-only.
+- **SDMs** (Service Delivery Managers) are on the same list with the SDM role and can also change the time they view (see [SDM Editing](#sdm-editing)).
+
+The list is persisted in `managers.json` next to the binary; entries saved before roles existed are Managers.
 
 **Setup:**
 1. Add super user account IDs to the `SUPER_USERS` list in `config.toml`:
@@ -292,17 +296,38 @@ There are two roles:
    SUPER_USERS = ["5a1234567890abcdef123456", "5b1234567890abcdef123456"]
    ```
    To find your account ID, check the `/api/user` endpoint while logged in.
-2. As a super user, open Settings (gear icon ⚙ in the sidebar footer) and use the **Managers** section to add or remove managers. Changes take effect immediately — removing a manager also ends any impersonation they have in progress.
+2. As a super user, open Settings (gear icon ⚙ in the sidebar footer) and use the **Managers** section to add or remove people and choose each one's role (Manager or SDM). Changes take effect immediately — removing a manager also ends any impersonation they have in progress, and changing an SDM to Manager blocks their next change.
 
 **Usage:**
-1. Managers and super users see a "Search users to impersonate..." field below their name
+1. Managers, SDMs and super users see a "Search users to impersonate..." field below their name
 2. Search for a team member by name
 3. Click their name to view their calendar
-4. A yellow banner shows "Viewing as: [Name]" with a Stop button
-5. All modifications (create, edit, delete) are blocked while impersonating
+4. A banner shows "Viewing as: [Name]" (yellow, for Managers) or "Editing as: [Name]" (blue, for SDMs and super users) with a Stop button
+5. For Managers, all modifications (create, edit, delete) are blocked
 
 **What you see:** the calendar, hours total and Active Issues are loaded with the team member's own Jira access, so you see exactly what they see, including time on projects you can't open in Jira yourself. Issue search and everything else still uses your own access. This needs the team member to have signed in to JiraTime at least once (and within Atlassian's 90-day inactivity limit). If they haven't, JiraTime falls back to your own access and shows a warning under the "Viewing as" bar, because entries on projects you can't open will be missing. Viewing someone's calendar keeps their saved sign-in active. Starting and stopping impersonation is recorded in the server log.
 6. Click "Stop" to return to your own calendar
+
+### SDM Editing
+
+SDMs (and super users) can correct a team member's time while viewing their calendar: drag, resize, edit and delete entries, move them to another issue or sub-task, split them, and add time the team member forgot to log. **The team member stays the author of every worklog**, so the time still counts as theirs everywhere.
+
+**How changes are made in Jira:**
+- **Edits and deletes** use the SDM's own Jira access. Jira keeps the worklog's author and records the SDM as the one who last updated it. SDMs therefore need the **Edit All Worklogs** and **Delete All Worklogs** project permissions in every project whose time they correct (check team-managed and JSM projects too, which have their own permissions).
+- **New worklogs** (adding time, Shift+drag copies, the second half of a split) have to be created with the team member's own JiraTime sign-in, because Jira always makes the caller the author. JiraTime then re-saves the new worklog with the SDM's access so Jira also shows the SDM as its last updater. If the team member has never signed in to JiraTime, or their sign-in has expired, adding, splitting and moving time is blocked and says why (nothing is ever created under the SDM's name instead); editing and deleting still work. User search shows "Not using JiraTime" next to such people, and the banner warns while viewing them.
+- **Moves** copy the worklog to the target with the team member's sign-in (re-saved with the SDM's, as above) and then delete the original with the SDM's access. Jira records an ordinary create and delete, so time tracking, issue history and reports that sync from Jira's worklog change feeds (such as JiraReports) all stay right; the worklog gets a new ID. Jira's worklog move API is deliberately not used: in testing it gave the worklog a new ID anyway and left JiraReports counting the time on the old issue until its reconcile pass, and Atlassian's runbook says it doesn't update time tracking or issue history.
+
+**Safety checks:**
+- An SDM can only change worklogs that belong to the person they are viewing.
+- Before a move or split writes anything, JiraTime checks the Jira permissions it will need (the SDM's, and the team member's Work On Issues on the target), so it doesn't stop halfway.
+- A split creates the new part first and then shortens the original; a move that also changes the time is undone if the move fails. If an undo also fails, the error says exactly what is logged twice and needs fixing in Jira.
+- Changing an entry from a previous month asks for confirmation, since it may already have been invoiced.
+
+**In the edit dialog** (SDM mode):
+- **Move to** shows the entry's project as a tree: epics, their issues and each issue's sub-tasks (epics load as you expand them; issues without an epic are grouped separately). Search finds issues in any project, including Done issues of any age. Picking an issue shows its billable/non-billable sub-task options, and a line under the form spells out what Save will do (e.g. "Save moves this entry to [ABC-14] DNS cutover").
+- **Split…** keeps the minutes you enter on the entry and logs the rest, starting where that part ends, on the issue chosen in the picker (which can be the same issue). The comment is copied to both parts.
+
+**Audit trail:** every SDM change is appended to `audit.log` next to the binary (one JSON object per line: time, SDM, team member, IP address, action, issue and worklog, before and after values, and whether it was in a previous month), and echoed to the server log. Refused and half-finished changes are recorded too. Forward `audit.log` to your central logging so it is kept beyond this server. Each changed worklog also gets a `jiratime.sdm` property naming the SDM, and the team member's calendar marks those entries with an amber underline ("Changed by … (SDM)").
 
 ### Hours Widget
 
@@ -342,7 +367,7 @@ The Day/Week view you choose is also remembered in your browser and kept when th
 | `HOURS_TARGET` | No | 40 | Weekly hours target for the widget |
 | `ACTIVE_ISSUES_WEEKS` | No | 4 | Weeks of activity for Active Issues filter |
 | `DONE_ISSUES_DAYS` | No | 90 | Days after completion that Done issues can still have time logged (replaces `DONE_ISSUES_WEEKS`) |
-| `SUPER_USERS` | No | [] | Site administrator account IDs: can impersonate other users and manage Managers in-app |
+| `SUPER_USERS` | No | [] | Site administrator account IDs: can impersonate and edit other users' time, and manage Managers and SDMs in-app |
 
 Environment variables can override config file values (e.g., `JIRA_CLIENT_ID=xxx ./jiratime`).
 
@@ -377,6 +402,9 @@ jiratime/
 ├── auth.go              # OAuth 2.0 flow and session management
 ├── jira.go              # Jira REST API client
 ├── handlers.go          # HTTP request handlers
+├── sdm.go               # SDM editing: whose Jira access each change uses, checks, moves
+├── audit.go             # Audit log of SDM changes
+├── managers.go          # Manager/SDM list (managers.json)
 ├── types.go             # Data structures
 ├── cache.go             # In-memory caching
 ├── static/
@@ -402,10 +430,13 @@ jiratime/
 | GET | `/logout` | Clear session and logout |
 | GET | `/api/events?start=X&end=Y` | Get worklogs for date range |
 | POST | `/api/events` | Create a worklog |
-| PUT | `/api/events/{id}` | Update a worklog |
+| PUT | `/api/events/{id}` | Update a worklog (moves it when the dialog picks another issue or sub-task) |
+| POST | `/api/events/{id}/split` | Split a worklog `{duration_min, parent_key, subtask_type_id?, subtask_key?}` |
 | DELETE | `/api/events/{id}` | Delete a worklog |
 | GET | `/api/issues` | Get issues assigned to current user |
 | GET | `/api/issues/search?q=X` | Search all Jira issues by text |
+| GET | `/api/hierarchy?project=KEY` | A project's epics for the Move-to tree (`&no_epic=1`: its issues without an epic) |
+| GET | `/api/hierarchy?parent=KEY` | An epic's child issues with their sub-tasks |
 | GET | `/api/hours?start=X&end=Y` | Get hours summary for a week (RFC 3339 bounds in the user's timezone) |
 | POST | `/api/refresh` | Force cache refresh |
 | GET | `/api/user` | Get current user info |
@@ -413,7 +444,7 @@ jiratime/
 | POST | `/api/impersonate` | Start impersonating a user (super users and managers) |
 | POST | `/api/impersonate/stop` | Stop impersonating |
 | GET | `/api/managers` | List managers (super users only) |
-| POST | `/api/managers` | Add or update a manager (super users only) |
+| POST | `/api/managers` | Add or update a manager `{account_id, display_name, avatar_url, role}` (role `manager` or `sdm`; super users only) |
 | DELETE | `/api/managers/{account_id}` | Remove a manager (super users only) |
 
 ## Troubleshooting
@@ -436,7 +467,8 @@ jiratime/
 - Issues archived one at a time (a Premium/Enterprise feature, separate from archiving a whole project) are not returned by Jira search, so their time can't be shown. Unarchive the issue to see it again.
 
 ### Billable/Non-billable sub-task types don't appear in the dialog
-- The sub-task type must be added to the **project's** Work Item Type scheme first (Project settings → **Work items → Types**, or **Work types** for team-managed projects). Types configured in JiraMetadata but missing from the project's scheme are silently ignored. See [Setting up a project's sub-task types](#setting-up-a-projects-sub-task-types-order-matters).
+- The sub-task type must be added to the **project's** Work Item Type scheme first (Project settings → **Work items → Types**, or **Work types** for team-managed projects). Types configured in JiraMetadata but missing from the project's scheme aren't offered. See [Setting up a project's sub-task types](#setting-up-a-projects-sub-task-types-order-matters).
+- **Check the server log.** JiraTime logs why a configured type isn't offered, once per project and type: `isn't a sub-task type in the project's work type scheme`, `isn't an issue type JiraTime can see`, a JiraMetadata field whose name it doesn't read (`looks like sub-task settings but … is ignored`), `is a "…" sub-task, which isn't one of project …'s configured sub-task types` (the open issue is itself a sub-task), or `Failed to resolve sub-task types for project …` (the property couldn't be read).
 - After adding a type, click the sidebar **Refresh** button — the project property and issue-type scheme are cached for 15 minutes.
 - Sub-tasks can't have sub-tasks of their own, so the section never appears when the open issue is itself a sub-task.
 

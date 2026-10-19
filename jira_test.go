@@ -109,7 +109,7 @@ func TestSearchIssuesFollowsPagesAndSkipsEpics(t *testing.T) {
 		})
 	})
 
-	issues, err := client.SearchIssues(context.Background(), "ABC")
+	issues, err := client.SearchIssues(context.Background(), "ABC", false)
 	if err != nil {
 		t.Fatalf("SearchIssues: %v", err)
 	}
@@ -451,4 +451,35 @@ func containsValue(values []interface{}, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestGetProjectSubtaskConfigToleratesOddFieldShapes(t *testing.T) {
+	cases := []struct {
+		name     string
+		value    map[string]interface{}
+		wantIDs  string
+		wantMode string
+	}{
+		{"JiraMetadata label \"Non-Billable Sub-tasks\"", map[string]interface{}{"billable": "Yes", "billable_subtasks": nil, "nonbillable_subtasks": []string{"11457", "11490"}}, "11457,11490", SubtaskModeNonBillable},
+		{"cleared field stored as empty string", map[string]interface{}{"billable": true, "billable_subtasks": "", "non_billable_subtasks": []string{"11492"}}, "11492", SubtaskModeNonBillable},
+		{"IDs stored as numbers", map[string]interface{}{"billable": false, "billable_subtasks": []int{11457}}, "11457", SubtaskModeBillable},
+		{"single ID stored as a string", map[string]interface{}{"billable": false, "billable_subtasks": "11457"}, "11457", SubtaskModeBillable},
+		{"nothing configured", map[string]interface{}{"billable": true, "tags": []string{"PS"}}, "", ""},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, client := newMockJira(t, func(w http.ResponseWriter, r *http.Request, body map[string]interface{}) {
+				writeTestJSON(w, http.StatusOK, map[string]interface{}{"key": "jirametadata", "value": c.value})
+			})
+
+			cfg, err := client.GetProjectSubtaskConfig(context.Background(), "AC2643")
+			if err != nil {
+				t.Fatalf("GetProjectSubtaskConfig: %v", err)
+			}
+			if got := strings.Join(cfg.TypeIDs, ","); got != c.wantIDs || cfg.Mode != c.wantMode {
+				t.Errorf("got %q (%s), want %q (%s)", got, cfg.Mode, c.wantIDs, c.wantMode)
+			}
+		})
+	}
 }

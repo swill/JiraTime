@@ -34,6 +34,7 @@ func main() {
 	mux.HandleFunc("/api/issues", requireAuth(handleGetIssues))
 	mux.HandleFunc("/api/issues/search", requireAuth(handleSearchIssues))
 	mux.HandleFunc("/api/issues/", requireAuth(handleIssueByKey))
+	mux.HandleFunc("/api/hierarchy", requireAuth(handleHierarchy))
 	mux.HandleFunc("/api/hours", requireAuth(handleGetHours))
 	mux.HandleFunc("/api/refresh", requireAuth(handleRefresh))
 	mux.HandleFunc("/api/user", requireAuth(handleGetUser))
@@ -117,6 +118,16 @@ func handleEventByID(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/events/")
 	if path == "" {
 		http.Error(w, "Event ID required", http.StatusBadRequest)
+		return
+	}
+
+	// /api/events/{id}/split
+	if eventID, ok := strings.CutSuffix(path, "/split"); ok {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		handleSplitEvent(w, r, eventID)
 		return
 	}
 

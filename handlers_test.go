@@ -11,14 +11,14 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// newViewTest sets up a super user ("manager") session, saved tokens for the
-// given accounts, and a mock Jira that records which token each call used
+// newViewTest sets up a view-only manager ("manager") session, saved tokens
+// for the given accounts, and a mock Jira that records which token each call
+// used
 func newViewTest(t *testing.T, impersonating string, tokens map[string]string) (*mockJira, func(method, target string) *httptest.ResponseRecorder) {
 	t.Helper()
 	viper.Set("SESSION_SECRET", "test-secret-that-is-at-least-32-characters")
 	viper.Set("BASE_URL", "https://jiratime.example")
-	viper.Set("SUPER_USERS", []string{"manager"})
-	t.Cleanup(func() { viper.Set("SUPER_USERS", nil) })
+	setTestManager(t, "manager", RoleManager)
 
 	store := testTokenStore(t, nil)
 	for account, access := range tokens {

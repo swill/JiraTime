@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -33,6 +34,9 @@ type Issue struct {
 	Key        string `json:"key"`
 	Summary    string `json:"summary"`
 	ProjectKey string `json:"project_key"`
+	// Set by search so the SDM Move-to picker can show where a result sits
+	ParentKey     string `json:"parent_key,omitempty"`
+	ParentSummary string `json:"parent_summary,omitempty"`
 }
 
 // CalendarEvent represents a worklog as a calendar event
@@ -54,6 +58,10 @@ type CalendarEvent struct {
 	// Set when the issue's project is archived: Jira makes its issues
 	// read-only, so the entry can be viewed but not changed
 	ProjectArchived bool `json:"project_archived,omitempty"`
+	// Set when an SDM last changed the entry on the user's behalf (from the
+	// jiratime.sdm worklog property)
+	SDMChangedBy string     `json:"sdm_changed_by,omitempty"`
+	SDMChangedAt *time.Time `json:"sdm_changed_at,omitempty"`
 }
 
 // CreateEventReq is the request body for creating a worklog
@@ -78,6 +86,37 @@ type UpdateEventReq struct {
 	ParentKey     string `json:"parent_key,omitempty"`
 	SubtaskKey    string `json:"subtask_key,omitempty"`
 	SubtaskTypeID string `json:"subtask_type_id,omitempty"`
+}
+
+// SplitEventReq is the request body for splitting a worklog in two: the
+// original keeps DurationMin minutes and the rest becomes a new worklog,
+// starting where the first part ends, on the issue chosen by ParentKey and
+// the optional sub-task fields (resolved like a dialog save)
+type SplitEventReq struct {
+	DurationMin   int    `json:"duration_min"`
+	ParentKey     string `json:"parent_key"`
+	SubtaskKey    string `json:"subtask_key,omitempty"`
+	SubtaskTypeID string `json:"subtask_type_id,omitempty"`
+}
+
+// HierarchyNode is an issue in the SDM Move-to picker's Epic > Issue >
+// Sub-task tree
+type HierarchyNode struct {
+	Key      string          `json:"key"`
+	Summary  string          `json:"summary"`
+	Status   string          `json:"status"`
+	Done     bool            `json:"done"`
+	Subtasks []HierarchyNode `json:"subtasks,omitempty"`
+}
+
+// HierarchyRes is one level of the Move-to tree, loaded as it is expanded:
+// a project's epics, an epic's child issues, or a project's issues without an
+// epic. Truncated means only the most recently updated issues are included.
+type HierarchyRes struct {
+	Project   *Project        `json:"project,omitempty"`
+	Epics     []HierarchyNode `json:"epics,omitempty"`
+	Issues    []HierarchyNode `json:"issues,omitempty"`
+	Truncated bool            `json:"truncated"`
 }
 
 // Sub-task configuration modes. A project configures either billable sub-tasks
@@ -119,6 +158,7 @@ type SubtaskInfo struct {
 // choices; it is empty when the project has no sub-tasks configured.
 type SubtaskOptionsRes struct {
 	IssueKey       string        `json:"issue_key"`
+	ProjectKey     string        `json:"project_key"`
 	IssueSummary   string        `json:"issue_summary"`
 	IssueTitle     string        `json:"issue_title"`
 	SubtaskMode    string        `json:"subtask_mode,omitempty"`
@@ -178,7 +218,24 @@ type JiraSearchIssue struct {
 		} `json:"project"`
 		IssueType JiraIssueTypeRef `json:"issuetype"`
 		Parent    *JiraParentRef   `json:"parent,omitempty"`
+		// Only requested by the Move-to tree
+		Status   JiraStatusRef `json:"status"`
+		Subtasks []struct {
+			Key    string `json:"key"`
+			Fields struct {
+				Summary string        `json:"summary"`
+				Status  JiraStatusRef `json:"status"`
+			} `json:"fields"`
+		} `json:"subtasks,omitempty"`
 	} `json:"fields"`
+}
+
+// JiraStatusRef is an issue status as returned in issue fields
+type JiraStatusRef struct {
+	Name           string `json:"name"`
+	StatusCategory struct {
+		Key string `json:"key"` // "new", "indeterminate" or "done"
+	} `json:"statusCategory"`
 }
 
 // JiraIssueTypeRef is an issue type reference as returned in issue fields
@@ -251,8 +308,12 @@ type JiraWorklog struct {
 	} `json:"author"`
 	// Only populated when fetched with expand=properties
 	Properties []struct {
-		Key string `json:"key"`
+		Key   string          `json:"key"`
+		Value json.RawMessage `json:"value"`
 	} `json:"properties,omitempty"`
+	// The comment exactly as Jira stores it (Atlassian Document Format), so
+	// it can be copied or written back unchanged. Only set by GetWorklog.
+	RawComment json.RawMessage `json:"-"`
 }
 
 // JiraWorklogResponse is one page of an issue's worklogs
@@ -267,12 +328,20 @@ type StoredTokens struct {
 	Tokens map[string]*oauth2.Token `json:"tokens"` // keyed by account_id
 }
 
-// Manager is a user who can view other users' calendars (read-only
-// impersonation). Managers are administered in-app by super users.
+// Roles for entries on the manager list
+const (
+	RoleManager = "manager" // views other users' calendars read-only
+	RoleSDM     = "sdm"     // Service Delivery Manager: can also change their time
+)
+
+// Manager is a user who can view other users' calendars. Managers are
+// administered in-app by super users; the role decides whether they can also
+// change what they see (RoleSDM) or only view it (RoleManager).
 type Manager struct {
 	AccountID   string    `json:"account_id"`
 	DisplayName string    `json:"display_name"`
 	AvatarURL   string    `json:"avatar_url,omitempty"`
+	Role        string    `json:"role"`
 	AddedBy     string    `json:"added_by"` // account ID of the super user who added them
 	AddedAt     time.Time `json:"added_at"`
 }
@@ -282,9 +351,11 @@ type StoredManagers struct {
 	Managers []Manager `json:"managers"`
 }
 
-// ManagerReq is the request body for creating/updating a manager
+// ManagerReq is the request body for creating/updating a manager. An empty
+// Role keeps an existing manager's role (RoleManager for a new one).
 type ManagerReq struct {
 	AccountID   string `json:"account_id"`
 	DisplayName string `json:"display_name"`
 	AvatarURL   string `json:"avatar_url,omitempty"`
+	Role        string `json:"role,omitempty"`
 }

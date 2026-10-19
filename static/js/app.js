@@ -315,8 +315,15 @@
             },
 
             eventDidMount: function(arg) {
+                const notes = [];
+                if (arg.event.extendedProps.sdmChangedBy) {
+                    notes.push(sdmChangeNote(arg.event));
+                }
                 if (arg.event.extendedProps.projectArchived) {
-                    arg.el.title = ARCHIVED_ENTRY_NOTE;
+                    notes.push(ARCHIVED_ENTRY_NOTE);
+                }
+                if (notes.length > 0) {
+                    arg.el.title = notes.join('\n');
                 }
             }
         });
@@ -360,9 +367,15 @@
                         parentKey: e.parent_key,
                         subtaskTypeId: e.subtask_type_id,
                         subtaskTypeName: e.subtask_type_name,
-                        projectArchived: !!e.project_archived
+                        projectArchived: !!e.project_archived,
+                        sdmChangedBy: e.sdm_changed_by || '',
+                        sdmChangedAt: e.sdm_changed_at || ''
                     }
                 };
+                if (e.sdm_changed_by) {
+                    // Visible to the user too, so time changed for them is never hidden
+                    event.classNames.push('sdm-changed');
+                }
                 if (e.project_archived) {
                     // Jira makes archived projects read-only: no move, resize or copy
                     event.editable = false;
@@ -439,6 +452,11 @@
             return;
         }
 
+        if (!confirmPriorPeriod(info.oldEvent.start, event.start)) {
+            info.revert();
+            return;
+        }
+
         // Update the event
         await updateEvent(event, info.revert);
     }
@@ -448,6 +466,11 @@
 
         // Only handle events with worklog IDs
         if (!event.extendedProps || !event.extendedProps.worklogId) {
+            info.revert();
+            return;
+        }
+
+        if (!confirmPriorPeriod(event.start)) {
             info.revert();
             return;
         }
@@ -509,6 +532,10 @@
             alert('Cannot create events while viewing another user\'s calendar');
             return;
         }
+        if (!canAddTime()) {
+            alert(noSignInMessage());
+            return;
+        }
 
         let options = null;
         showLoading();
@@ -557,6 +584,13 @@
     async function createEvent(issueKey, start, durationMin, description, subtaskTypeId, subtaskKey) {
         if (isViewOnlyMode()) {
             alert('Cannot create events while viewing another user\'s calendar');
+            return;
+        }
+        if (!canAddTime()) {
+            alert(noSignInMessage());
+            return;
+        }
+        if (!confirmPriorPeriod(start)) {
             return;
         }
         showLoading();
@@ -657,17 +691,34 @@
 
     // Dialog Functions
     const ARCHIVED_ENTRY_NOTE = 'This project is archived in Jira, so this entry can\'t be changed.';
+
+    // "Changed by <SDM> on <date>" for entries an SDM changed on the user's behalf
+    function sdmChangeNote(event) {
+        const props = event.extendedProps;
+        const at = props.sdmChangedAt ? new Date(props.sdmChangedAt) : null;
+        const when = at && !isNaN(at) ? ` on ${formatLocalDate(at)}` : '';
+        return `Changed by ${props.sdmChangedBy} (SDM)${when}`;
+    }
     let currentEditingEvent = null;
     let dialogReadOnly = false; // Open dialog only shows the entry (no save/delete)
     let dialogSubtaskOptions = null; // Sub-task options for the open dialog (null = not loaded)
     let selectedSubtaskTypeId = null;
     let selectedSubtaskKey = null;
+    // Where the entry being edited is logged now, to tell when Save moves it:
+    // { key, typeId, subtaskKey } in sub-task options terms
+    let dialogOriginalTarget = null;
+    let dialogEntry = null; // { start, durationMin, description } of the entry being edited
+    let splitMode = false;
 
     function initDialog() {
         const dialog = document.getElementById('editDialog');
         const form = document.getElementById('editForm');
         const cancelBtn = document.getElementById('cancelBtn');
         const deleteBtn = document.getElementById('deleteBtn');
+
+        initMovePicker();
+        document.getElementById('splitBtn').addEventListener('click', () => setSplitMode(!splitMode));
+        document.getElementById('splitDuration').addEventListener('input', updateActionSummary);
 
         // Handle dialog close (cancel, click outside, escape key)
         dialog.addEventListener('close', () => {
@@ -677,6 +728,7 @@
                 currentEditingEvent.el.classList.remove('fc-event-selected');
             }
             currentEditingEvent = null;
+            splitMode = false;
 
             // Also blur any focused event elements
             document.querySelectorAll('.fc-event').forEach(el => {
@@ -691,7 +743,7 @@
 
         deleteBtn.addEventListener('click', async () => {
             const eventId = document.getElementById('eventId').value;
-            if (confirm('Delete this time entry?')) {
+            if (confirm('Delete this time entry?') && confirmPriorPeriod(dialogEntry && dialogEntry.start)) {
                 await deleteEvent(eventId);
                 dialog.close();
             }
@@ -714,6 +766,21 @@
             const subtaskTypeId = selectedSubtaskTypeId;
             const subtaskKey = selectedSubtaskKey;
             const subtaskOptions = dialogSubtaskOptions;
+
+            if (eventId && splitMode) {
+                const keep = parseInt(document.getElementById('splitDuration').value, 10);
+                if (!(keep > 0 && keep < dialogEntry.durationMin)) {
+                    alert(`Keep fewer minutes than the entry's ${dialogEntry.durationMin} on it, so there is time left to split off.`);
+                    return;
+                }
+                if (!confirmPriorPeriod(dialogEntry.start)) return;
+                dialog.close();
+                await splitEvent(eventId, keep, subtaskOptions ? subtaskOptions.issue_key : issueKey, subtaskTypeId, subtaskKey);
+                return;
+            }
+
+            // Edits are confirmed here; new entries in createEvent
+            if (eventId && !confirmPriorPeriod(dialogEntry && dialogEntry.start, start)) return;
 
             dialog.close();
             showLoading();
@@ -784,25 +851,52 @@
         document.getElementById('eventDuration').value = getDurationMinutes(event);
         document.getElementById('eventDescription').value = event.extendedProps.description || '';
 
+        dialogEntry = {
+            start: event.start,
+            durationMin: getDurationMinutes(event),
+            description: event.extendedProps.description || ''
+        };
+
         // Load sub-task options; a worklog on a configured sub-task resolves to
         // its parent with the current association pre-checked (this also covers
         // time entered in Jira/JSM directly)
         dialogSubtaskOptions = null;
+        dialogOriginalTarget = null;
         showLoading();
         try {
             dialogSubtaskOptions = await fetchSubtaskOptions(event.extendedProps.issueKey);
+            dialogOriginalTarget = {
+                key: dialogSubtaskOptions.issue_key,
+                typeId: dialogSubtaskOptions.current_type_id || null,
+                subtaskKey: dialogSubtaskOptions.current_subtask || null
+            };
         } catch (error) {
             // Dialog still works; the sub-task association just cannot be changed
             console.error('Error loading sub-task options:', error);
         } finally {
             hideLoading();
         }
-        renderSubtaskSection(dialogSubtaskOptions, readOnly);
+        // Changing the sub-task moves the worklog, which needs their sign-in
+        const canMove = canAddTime();
+        renderSubtaskSection(dialogSubtaskOptions, readOnly || !canMove);
+
+        let note = archived ? ARCHIVED_ENTRY_NOTE : '';
+        if (!readOnly && isSDMMode()) {
+            note = `You're changing ${currentUser.impersonating_name}'s time. Jira will show you as the one who changed it.`;
+            if (!canMove) {
+                note += ` It can't be moved or split until they sign in to JiraTime.`;
+            }
+        } else if (event.extendedProps.sdmChangedBy) {
+            note = [sdmChangeNote(event), note].filter(Boolean).join(' ');
+        }
 
         title.textContent = readOnly ? 'View Time Entry' : 'Edit Time Entry';
         deleteBtn.style.display = readOnly ? 'none' : 'inline-block';
         saveBtn.style.display = readOnly ? 'none' : 'inline-block';
-        setDialogReadOnly(readOnly, archived ? ARCHIVED_ENTRY_NOTE : '');
+        setDialogReadOnly(readOnly, note);
+        setSplitMode(false);
+        // SDMs can move the entry anywhere (or split it) with the picker
+        setupMoveSection(!readOnly && isSDMMode() && canMove && !!dialogSubtaskOptions);
 
         dialog.showModal();
     }
@@ -829,6 +923,8 @@
 
         currentEditingEvent = null;
         dialogSubtaskOptions = options;
+        dialogOriginalTarget = null;
+        dialogEntry = null;
 
         document.getElementById('eventId').value = '';
         document.getElementById('eventIssue').value = options.issue_title;
@@ -842,9 +938,402 @@
         title.textContent = 'New Time Entry';
         deleteBtn.style.display = 'none';
         saveBtn.style.display = 'inline-block';
-        setDialogReadOnly(false, '');
+        setDialogReadOnly(false, isSDMMode()
+            ? `This will be logged as ${currentUser.impersonating_name}'s time, entered by you.`
+            : '');
+        setSplitMode(false);
+        setupMoveSection(false);
 
         dialog.showModal();
+    }
+
+    async function splitEvent(eventId, keepMin, parentKey, subtaskTypeId, subtaskKey) {
+        showLoading();
+        try {
+            const body = { duration_min: keepMin, parent_key: parentKey };
+            if (subtaskTypeId) body.subtask_type_id = subtaskTypeId;
+            if (subtaskKey) body.subtask_key = subtaskKey;
+
+            const response = await apiFetch(`/api/events/${encodeURIComponent(eventId)}/split`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                console.error('Split event failed:', text);
+                throw new Error(extractErrorMessage(text));
+            }
+        } catch (error) {
+            console.error('Error splitting event:', error);
+            alert('Failed to split time entry: ' + error.message);
+        } finally {
+            calendar.refetchEvents();
+            updateHoursWidget(calendar ? calendar.view.activeStart : undefined);
+            hideLoading();
+        }
+    }
+
+    // Split mode: the original keeps the minutes entered and the rest goes to
+    // the issue chosen in the picker; the entry's own fields are not edited
+    function setSplitMode(on) {
+        const wasOn = splitMode;
+        splitMode = on;
+        const dialog = document.getElementById('editDialog');
+        const splitBtn = document.getElementById('splitBtn');
+        const splitDuration = document.getElementById('splitDuration');
+
+        document.getElementById('splitSection').classList.toggle('hidden', !on);
+        splitBtn.textContent = on ? 'Cancel split' : 'Split…';
+        document.getElementById('moveSectionLabel').textContent = on ? 'Rest goes to' : 'Move to';
+        dialog.querySelector('button[type="submit"]').textContent = on ? 'Split' : 'Save';
+        // Delete's visibility is set inline when the dialog opens
+        if (on) {
+            document.getElementById('deleteBtn').style.display = 'none';
+        } else if (wasOn) {
+            document.getElementById('deleteBtn').style.display = 'inline-block';
+        }
+
+        if (on && dialogEntry) {
+            // Split what is saved, not unsaved edits
+            document.getElementById('eventStart').value = formatDateTimeLocal(dialogEntry.start);
+            document.getElementById('eventDuration').value = dialogEntry.durationMin;
+            document.getElementById('eventDescription').value = dialogEntry.description;
+            const half = Math.round(dialogEntry.durationMin / 2 / 15) * 15;
+            splitDuration.value = Math.min(Math.max(half, 1), dialogEntry.durationMin - 1);
+            splitDuration.max = dialogEntry.durationMin - 1;
+            document.getElementById('splitHint').textContent = `Of the entry's ${dialogEntry.durationMin} minutes. The rest is logged by the same person, starting where this part ends.`;
+        }
+        ['eventStart', 'eventDuration', 'eventDescription'].forEach(id => {
+            document.getElementById(id).readOnly = on || dialogReadOnly;
+        });
+
+        updateActionSummary();
+    }
+
+    // Where Save (or Split) will log the time, in words
+    function describeTarget() {
+        const options = dialogSubtaskOptions;
+        if (!options) return '';
+        const type = (options.subtask_types || []).find(t => t.id === selectedSubtaskTypeId);
+        if (selectedSubtaskKey) {
+            return `[${selectedSubtaskKey}]${type ? ` (${type.name} sub-task of ${options.issue_key})` : ''}`;
+        }
+        if (type) {
+            return `a "${type.name}" sub-task of [${options.issue_key}]`;
+        }
+        return options.issue_title;
+    }
+
+    function targetChanged() {
+        const options = dialogSubtaskOptions;
+        const original = dialogOriginalTarget;
+        if (!options || !original) return false;
+        return options.issue_key !== original.key ||
+            (selectedSubtaskTypeId || null) !== original.typeId ||
+            (selectedSubtaskKey || null) !== original.subtaskKey;
+    }
+
+    // Spell out what saving will do when it does more than update the entry
+    function updateActionSummary() {
+        const el = document.getElementById('actionSummary');
+        const editing = !!document.getElementById('eventId').value;
+        let text = '';
+
+        if (editing && splitMode && dialogEntry) {
+            const keep = parseInt(document.getElementById('splitDuration').value, 10);
+            const owner = isSDMMode() ? currentUser.impersonating_name : 'you';
+            text = keep > 0 && keep < dialogEntry.durationMin
+                ? `Split keeps ${keep} min on this entry and logs the other ${dialogEntry.durationMin - keep} min on ${describeTarget()}, as ${owner}.`
+                : `Keep fewer than the entry's ${dialogEntry.durationMin} minutes on it.`;
+        } else if (editing && !dialogReadOnly && targetChanged()) {
+            text = `Save moves this entry to ${describeTarget()}.`;
+        }
+
+        el.textContent = text;
+        el.classList.toggle('hidden', !text);
+    }
+
+    // SDM Move-to picker: a searchable Epic > Issue > Sub-task tree. Picking an
+    // issue makes it the target for Save (or the rest of a split), with its
+    // own sub-task options.
+    let moveTreeProject = null;
+    let moveSearchTimeout = null;
+
+    function initMovePicker() {
+        const searchInput = document.getElementById('moveSearch');
+        const results = document.getElementById('moveSearchResults');
+
+        searchInput.addEventListener('input', () => {
+            const query = searchInput.value.trim();
+            clearTimeout(moveSearchTimeout);
+            if (query.length < 2) {
+                results.classList.add('hidden');
+                return;
+            }
+            moveSearchTimeout = setTimeout(async () => {
+                try {
+                    const response = await apiFetch(`/api/issues/search?q=${encodeURIComponent(query)}`);
+                    if (!response.ok) throw new Error('Search failed');
+                    renderMoveSearchResults(await response.json() || []);
+                } catch (error) {
+                    console.error('Error searching issues:', error);
+                }
+            }, 300);
+        });
+
+        // Enter picks the first result rather than saving the dialog
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            const first = results.querySelector('.move-result');
+            if (first && !results.classList.contains('hidden')) first.click();
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!searchInput.contains(e.target) && !results.contains(e.target)) {
+                results.classList.add('hidden');
+            }
+        });
+    }
+
+    function setupMoveSection(show) {
+        document.getElementById('moveSection').classList.toggle('hidden', !show);
+        document.getElementById('splitBtn').classList.toggle('hidden', !show || !dialogEntry || dialogEntry.durationMin < 2);
+        if (!show) return;
+
+        document.getElementById('moveSearch').value = '';
+        document.getElementById('moveSearchResults').classList.add('hidden');
+        renderMoveTarget();
+        moveTreeProject = null;
+        loadMoveTree(dialogSubtaskOptions.project_key);
+    }
+
+    function renderMoveSearchResults(issues) {
+        const container = document.getElementById('moveSearchResults');
+        container.innerHTML = '';
+        if (issues.length === 0) {
+            container.classList.add('hidden');
+            return;
+        }
+
+        issues.forEach(issue => {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'move-result';
+            row.appendChild(issueLabel(issue.key, issue.summary));
+            if (issue.parent_key) {
+                const parent = document.createElement('span');
+                parent.className = 'move-result-parent';
+                parent.textContent = `in ${issue.parent_key} ${issue.parent_summary || ''}`;
+                row.appendChild(parent);
+            }
+            row.addEventListener('click', () => {
+                container.classList.add('hidden');
+                document.getElementById('moveSearch').value = '';
+                selectMoveTarget(issue.key);
+                if (issue.project_key && issue.project_key !== moveTreeProject) {
+                    loadMoveTree(issue.project_key);
+                }
+            });
+            container.appendChild(row);
+        });
+        container.classList.remove('hidden');
+    }
+
+    // Make an issue the target; its sub-task options replace the current ones
+    async function selectMoveTarget(key) {
+        const saveBtn = document.getElementById('editDialog').querySelector('button[type="submit"]');
+        saveBtn.disabled = true;
+        showLoading();
+        try {
+            dialogSubtaskOptions = await fetchSubtaskOptions(key);
+            renderSubtaskSection(dialogSubtaskOptions, false);
+            renderMoveTarget();
+        } catch (error) {
+            console.error('Error loading issue:', error);
+            alert(`Failed to load ${key}: ${error.message}`);
+        } finally {
+            saveBtn.disabled = false;
+            hideLoading();
+        }
+    }
+
+    function renderMoveTarget() {
+        const el = document.getElementById('moveTarget');
+        el.innerHTML = '';
+        if (!dialogSubtaskOptions) return;
+
+        const label = document.createElement('span');
+        label.textContent = dialogSubtaskOptions.issue_title;
+        el.appendChild(label);
+
+        if (dialogOriginalTarget && dialogSubtaskOptions.issue_key !== dialogOriginalTarget.key) {
+            const reset = document.createElement('button');
+            reset.type = 'button';
+            reset.className = 'link-button';
+            reset.textContent = 'Keep current issue';
+            reset.addEventListener('click', () => selectMoveTarget(document.getElementById('eventIssueKey').value));
+            el.appendChild(reset);
+        }
+
+        highlightMoveTarget();
+    }
+
+    // Mark the target in the tree: the chosen sub-task, else the issue
+    function highlightMoveTarget() {
+        const key = selectedSubtaskKey || (dialogSubtaskOptions && dialogSubtaskOptions.issue_key);
+        document.querySelectorAll('#moveTree .move-tree-issue').forEach(row => {
+            row.classList.toggle('selected', row.dataset.key === key);
+        });
+    }
+
+    async function fetchHierarchy(params) {
+        const response = await apiFetch('/api/hierarchy?' + new URLSearchParams(params));
+        if (!response.ok) {
+            throw new Error(extractErrorMessage(await response.text()));
+        }
+        return response.json();
+    }
+
+    // Load a project's epics (and its "No epic" group); epics load their
+    // issues when expanded
+    async function loadMoveTree(projectKey) {
+        const tree = document.getElementById('moveTree');
+        if (!projectKey || projectKey === moveTreeProject) return;
+        moveTreeProject = projectKey;
+        tree.innerHTML = '';
+        tree.appendChild(treeNote('Loading issues…'));
+
+        try {
+            const res = await fetchHierarchy({ project: projectKey });
+            if (moveTreeProject !== projectKey) return; // another project was picked meanwhile
+
+            tree.innerHTML = '';
+            const header = document.createElement('div');
+            header.className = 'move-tree-project';
+            header.textContent = `${res.project.name} (${res.project.key})`;
+            tree.appendChild(header);
+
+            // Empty lists are left out of the response (e.g. JSM projects have no epics)
+            const epics = res.epics || [];
+            epics.forEach(epic => {
+                tree.appendChild(treeGroup(issueLabel(epic.key, epic.summary, epic.done ? epic.status : '', 'Epic'),
+                    () => fetchHierarchy({ parent: epic.key })));
+            });
+
+            // Without epics this group is every request in the project, so it
+            // stays closed until asked for: search is quicker on a big project
+            if (epics.length === 0) {
+                tree.appendChild(treeNote('This project has no epics. Search above, or open the list of its most recently updated issues.'));
+            }
+            const noEpic = document.createElement('span');
+            noEpic.textContent = epics.length > 0 ? 'No epic' : 'Issues';
+            tree.appendChild(treeGroup(noEpic, () => fetchHierarchy({ project: projectKey, no_epic: '1' })));
+
+            if (res.truncated) {
+                tree.appendChild(treeNote('Showing the most recently updated epics. Search to find others.'));
+            }
+        } catch (error) {
+            console.error('Error loading issue tree:', error);
+            tree.innerHTML = '';
+            tree.appendChild(treeNote(`Couldn't load issues: ${error.message}`));
+            moveTreeProject = null;
+        }
+    }
+
+    // A collapsible tree group whose issues load the first time it opens
+    function treeGroup(label, load, open) {
+        const group = document.createElement('div');
+        group.className = 'move-tree-group';
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'move-tree-toggle';
+        const caret = document.createElement('span');
+        caret.className = 'move-tree-caret';
+        toggle.appendChild(caret);
+        toggle.appendChild(label);
+
+        const children = document.createElement('div');
+        children.className = 'move-tree-children hidden';
+        let loaded = false;
+
+        const setOpen = (isOpen) => {
+            children.classList.toggle('hidden', !isOpen);
+            caret.textContent = isOpen ? '▾' : '▸';
+            toggle.setAttribute('aria-expanded', String(isOpen));
+            if (isOpen && !loaded) {
+                loaded = true;
+                children.appendChild(treeNote('Loading…'));
+                load().then(res => renderTreeIssues(children, res)).catch(error => {
+                    loaded = false;
+                    children.innerHTML = '';
+                    children.appendChild(treeNote(`Couldn't load issues: ${error.message}`));
+                });
+            }
+        };
+        toggle.addEventListener('click', () => setOpen(children.classList.contains('hidden')));
+        setOpen(!!open);
+
+        group.appendChild(toggle);
+        group.appendChild(children);
+        return group;
+    }
+
+    function renderTreeIssues(container, res) {
+        container.innerHTML = '';
+        const issues = res.issues || [];
+        if (issues.length === 0) {
+            container.appendChild(treeNote('No issues'));
+        }
+        issues.forEach(issue => {
+            container.appendChild(treeIssue(issue, false));
+            (issue.subtasks || []).forEach(st => container.appendChild(treeIssue(st, true)));
+        });
+        if (res.truncated) {
+            container.appendChild(treeNote('Showing the most recently updated issues. Search to find others.'));
+        }
+        highlightMoveTarget();
+    }
+
+    function treeIssue(issue, isSubtask) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'move-tree-issue' + (isSubtask ? ' subtask' : '') + (issue.done ? ' done' : '');
+        row.dataset.key = issue.key;
+        row.appendChild(issueLabel(issue.key, issue.summary, issue.status));
+        row.addEventListener('click', () => selectMoveTarget(issue.key));
+        return row;
+    }
+
+    // "KEY summary [status] [kind]" for picker rows
+    function issueLabel(key, summary, status, kind) {
+        const label = document.createElement('span');
+        label.className = 'move-label';
+        const keyEl = document.createElement('span');
+        keyEl.className = 'subtask-key';
+        keyEl.textContent = key;
+        label.appendChild(keyEl);
+        const summaryEl = document.createElement('span');
+        summaryEl.className = 'move-summary';
+        summaryEl.textContent = summary;
+        label.appendChild(summaryEl);
+        [kind, status].filter(Boolean).forEach(text => {
+            const badge = document.createElement('span');
+            badge.className = 'subtask-status';
+            badge.textContent = text;
+            label.appendChild(badge);
+        });
+        return label;
+    }
+
+    function treeNote(text) {
+        const note = document.createElement('p');
+        note.className = 'subtask-hint';
+        note.textContent = text;
+        return note;
     }
 
     // Render the configured sub-task checkboxes (billable or non-billable, per
@@ -861,6 +1350,7 @@
 
         if (!options || !options.subtask_types || options.subtask_types.length === 0) {
             section.classList.add('hidden');
+            updateActionSummary();
             return;
         }
 
@@ -949,6 +1439,8 @@
                         selectedSubtaskKey = null;
                     }
                     updateSubtaskHint(listEl, type.name);
+                    updateActionSummary();
+                    highlightMoveTarget();
                 });
             });
 
@@ -980,6 +1472,8 @@
                     listEl.classList.add('hidden');
                 }
                 updateSubtaskHint(listEl, type.name);
+                updateActionSummary();
+                highlightMoveTarget();
             });
         });
 
@@ -1002,6 +1496,7 @@
         }
 
         section.classList.remove('hidden');
+        updateActionSummary();
     }
 
     function updateSubtaskHint(listEl, typeName) {
@@ -1179,6 +1674,20 @@
             name.textContent = manager.display_name;
             item.appendChild(name);
 
+            // Manager: view-only; SDM: can also change the time they view
+            const role = document.createElement('select');
+            role.className = 'manager-role';
+            role.setAttribute('aria-label', `Role for ${manager.display_name}`);
+            [['manager', 'Manager (view)'], ['sdm', 'SDM (edit)']].forEach(([value, label]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                role.appendChild(option);
+            });
+            role.value = manager.role || 'manager';
+            role.addEventListener('change', () => setManagerRole(manager, role));
+            item.appendChild(role);
+
             const removeBtn = document.createElement('button');
             removeBtn.type = 'button';
             removeBtn.className = 'btn btn-small btn-danger';
@@ -1242,6 +1751,36 @@
         } catch (error) {
             console.error('Error adding manager:', error);
             alert('Failed to add manager');
+        }
+    }
+
+    async function setManagerRole(manager, select) {
+        const role = select.value;
+        if (role === 'sdm' && !confirm(`Let ${manager.display_name} change other people's time? Their changes are made with their own Jira access, so they also need the Edit All Worklogs and Delete All Worklogs permissions in Jira.`)) {
+            select.value = manager.role || 'manager';
+            return;
+        }
+
+        try {
+            const response = await apiFetch('/api/managers', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    account_id: manager.account_id,
+                    display_name: manager.display_name,
+                    avatar_url: manager.avatar_url,
+                    role: role
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to change role');
+            }
+            manager.role = role;
+        } catch (error) {
+            console.error('Error changing manager role:', error);
+            alert('Failed to change role');
+            select.value = manager.role || 'manager';
         }
     }
 
@@ -1314,19 +1853,28 @@
         const impersonateControls = document.getElementById('impersonateControls');
         const impersonationBar = document.getElementById('impersonationBar');
         const impersonatingName = document.getElementById('impersonatingName');
+        const noSignIn = document.getElementById('impersonationNoSignIn');
         const container = document.querySelector('.app-container');
+
+        // Shown up front so SDMs know before trying to add time
+        noSignIn.textContent = isSDMMode() && !canAddTime()
+            ? `${noSignInMessage()} Until then, you only see the entries you can open in Jira.`
+            : '';
+        noSignIn.classList.toggle('hidden', !noSignIn.textContent);
 
         // Check if currently impersonating
         if (currentUser.impersonating_id) {
             impersonationBar.classList.remove('hidden');
             impersonatingName.textContent = currentUser.impersonating_name;
-            container.classList.add('view-only-mode');
+            document.getElementById('viewingAsLabel').textContent = isSDMMode() ? 'Editing as:' : 'Viewing as:';
+            container.classList.toggle('view-only-mode', isViewOnlyMode());
+            container.classList.toggle('sdm-mode', isSDMMode());
 
             // Hide impersonate search when impersonating
             impersonateControls.classList.add('hidden');
         } else {
             impersonationBar.classList.add('hidden');
-            container.classList.remove('view-only-mode');
+            container.classList.remove('view-only-mode', 'sdm-mode');
 
             // Show impersonate controls for super users and managers
             if (currentUser.can_impersonate) {
@@ -1393,10 +1941,25 @@
         users.forEach(user => {
             const item = document.createElement('div');
             item.className = 'impersonate-user-item';
-            item.innerHTML = `
-                <img src="${user.avatar_url}" alt="">
-                <span>${user.display_name}</span>
-            `;
+
+            const avatar = document.createElement('img');
+            avatar.src = user.avatar_url;
+            avatar.alt = '';
+            item.appendChild(avatar);
+
+            const name = document.createElement('span');
+            name.textContent = user.display_name;
+            item.appendChild(name);
+
+            // SDMs can only add time for people who use JiraTime
+            if (currentUser.can_edit_others && !user.has_jiratime) {
+                const badge = document.createElement('span');
+                badge.className = 'no-jiratime-badge';
+                badge.textContent = 'Not using JiraTime';
+                badge.title = 'Their time can be edited, moved and deleted, but not added or split, until they sign in to JiraTime';
+                item.appendChild(badge);
+            }
+
             item.addEventListener('click', () => startImpersonation(user));
             container.appendChild(item);
         });
@@ -1467,11 +2030,42 @@
         const el = document.getElementById('impersonationLimited');
         const name = (currentUser && currentUser.impersonating_name) || 'This user';
         el.textContent = `Showing only entries you can open in Jira. ${name} needs to sign in to JiraTime for their full calendar to show here.`;
-        el.classList.toggle('hidden', !limited);
+        // An SDM's sign-in warning already says this
+        const covered = isSDMMode() && !canAddTime();
+        el.classList.toggle('hidden', !limited || covered);
     }
 
+    // Viewing someone else's calendar without being allowed to change it
     function isViewOnlyMode() {
-        return currentUser && currentUser.impersonating_id;
+        return !!(currentUser && currentUser.impersonating_id && !currentUser.can_edit_others);
+    }
+
+    // An SDM (or super user) changing someone else's calendar
+    function isSDMMode() {
+        return !!(currentUser && currentUser.impersonating_id && currentUser.can_edit_others);
+    }
+
+    // New time for someone else is created with their own JiraTime sign-in
+    // (so they are its author); without one it can only be edited
+    function canAddTime() {
+        return !isSDMMode() || currentUser.impersonating_signed_in !== false;
+    }
+
+    // Moving recreates the worklog as its author, so it needs their sign-in
+    // like adding, copying and splitting
+    function noSignInMessage() {
+        return `${currentUser.impersonating_name} hasn't signed in to JiraTime (or their sign-in has expired), so time can't be added, copied, split or moved for them. You can still edit and delete their entries.`;
+    }
+
+    // SDM changes to a previous month may alter time that was already
+    // invoiced, so they are confirmed first
+    function confirmPriorPeriod(...dates) {
+        if (!isSDMMode()) return true;
+        const monthStart = new Date();
+        monthStart.setDate(1);
+        monthStart.setHours(0, 0, 0, 0);
+        if (!dates.some(d => d && d < monthStart)) return true;
+        return confirm('This entry is in a previous month, which may already have been invoiced. Change it anyway?');
     }
 
     async function loadIssues() {

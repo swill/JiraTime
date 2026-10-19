@@ -38,6 +38,10 @@ func initManagers() {
 	managersLock.Lock()
 	for i := range stored.Managers {
 		m := stored.Managers[i]
+		// Entries saved before roles existed are view-only managers
+		if m.Role == "" {
+			m.Role = RoleManager
+		}
 		managers[m.AccountID] = &m
 	}
 	managersLock.Unlock()
@@ -62,7 +66,7 @@ func saveManagers() {
 		return
 	}
 
-	if err := os.WriteFile(managersFile, data, 0600); err != nil {
+	if err := writeFileAtomic(managersFile, data, 0600); err != nil {
 		logrus.Errorf("Failed to save managers: %v", err)
 	}
 }
@@ -75,10 +79,25 @@ func IsManager(accountID string) bool {
 	return ok
 }
 
+// IsSDM checks if the given account ID is on the manager list with the SDM role
+func IsSDM(accountID string) bool {
+	managersLock.RLock()
+	defer managersLock.RUnlock()
+	m, ok := managers[accountID]
+	return ok && m.Role == RoleSDM
+}
+
 // CanImpersonate checks if the given account ID may view other users'
 // calendars: super users (site admins from config) and app-managed managers
 func CanImpersonate(accountID string) bool {
 	return IsSuperUser(accountID) || IsManager(accountID)
+}
+
+// CanEditOthers checks if the given account ID may change the time on a
+// calendar it is viewing as someone else: super users and SDMs. Checked on
+// every write, so a role change takes effect on the next request.
+func CanEditOthers(accountID string) bool {
+	return IsSuperUser(accountID) || IsSDM(accountID)
 }
 
 // ListManagers returns all managers sorted by display name
@@ -120,8 +139,9 @@ func handleManagersRoute(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAddManager creates a manager, or updates the stored name/avatar if the
-// account is already a manager. The caller is already verified as a super user.
+// handleAddManager creates a manager, or updates the stored name/avatar/role if
+// the account is already a manager. The caller is already verified as a super
+// user.
 func handleAddManager(w http.ResponseWriter, r *http.Request, session *UserSession) {
 	var req ManagerReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -135,26 +155,44 @@ func handleAddManager(w http.ResponseWriter, r *http.Request, session *UserSessi
 		http.Error(w, "account_id and display_name are required", http.StatusBadRequest)
 		return
 	}
+	if req.Role != "" && req.Role != RoleManager && req.Role != RoleSDM {
+		http.Error(w, "role must be \"manager\" or \"sdm\"", http.StatusBadRequest)
+		return
+	}
 
 	manager := &Manager{
 		AccountID:   req.AccountID,
 		DisplayName: req.DisplayName,
 		AvatarURL:   req.AvatarURL,
+		Role:        req.Role,
 		AddedBy:     session.AccountID,
 		AddedAt:     time.Now().UTC(),
 	}
 
 	managersLock.Lock()
+	previousRole := ""
 	if existing, ok := managers[req.AccountID]; ok {
 		// Preserve the original audit trail on update
 		manager.AddedBy = existing.AddedBy
 		manager.AddedAt = existing.AddedAt
+		previousRole = existing.Role
+	}
+	// Re-adding someone from the search box sends no role: keep theirs
+	if manager.Role == "" {
+		manager.Role = previousRole
+	}
+	if manager.Role == "" {
+		manager.Role = RoleManager
 	}
 	managers[req.AccountID] = manager
 	saveManagers()
 	managersLock.Unlock()
 
-	logrus.Infof("Manager %s (%s) added/updated by super user %s", req.DisplayName, req.AccountID, session.AccountID)
+	if previousRole != "" && previousRole != manager.Role {
+		logrus.Infof("Manager %s role changed from %s to %s by super user %s", req.AccountID, previousRole, manager.Role, session.AccountID)
+	} else {
+		logrus.Infof("Manager %s (%s) added/updated as %s by super user %s", req.DisplayName, req.AccountID, manager.Role, session.AccountID)
+	}
 
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, manager)

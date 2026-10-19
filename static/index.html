@@ -20,10 +20,11 @@
                 <h1>JiraTime</h1>
                 <div class="user-info" id="userInfo"></div>
                 <div class="impersonation-bar hidden" id="impersonationBar">
-                    <span class="viewing-as">Viewing as: <strong id="impersonatingName"></strong></span>
+                    <span class="viewing-as"><span id="viewingAsLabel">Viewing as:</span> <strong id="impersonatingName"></strong></span>
                     <button id="stopImpersonateBtn" class="btn btn-small btn-danger">Stop</button>
                 </div>
                 <div class="impersonation-limited hidden" id="impersonationLimited"></div>
+                <div class="impersonation-limited hidden" id="impersonationNoSignIn"></div>
                 <div class="impersonate-controls hidden" id="impersonateControls">
                     <input type="text" id="impersonateSearch" placeholder="Search users to impersonate..." autocomplete="off">
                     <div class="impersonate-results hidden" id="impersonateResults"></div>
@@ -82,6 +83,23 @@
                 <input type="text" id="eventIssue" readonly>
             </div>
 
+            <!-- SDMs only: choose another issue (Epic > Issue > Sub-task) -->
+            <div class="form-group move-section hidden" id="moveSection">
+                <label id="moveSectionLabel" for="moveSearch">Move to</label>
+                <div class="move-target" id="moveTarget"></div>
+                <div class="move-search">
+                    <input type="text" id="moveSearch" placeholder="Search issues..." autocomplete="off">
+                    <div class="move-search-results hidden" id="moveSearchResults"></div>
+                </div>
+                <div class="move-tree" id="moveTree"></div>
+            </div>
+
+            <div class="form-group split-section hidden" id="splitSection">
+                <label for="splitDuration">Keep on this entry (minutes)</label>
+                <input type="number" id="splitDuration" min="1" step="1">
+                <p class="help-text" id="splitHint"></p>
+            </div>
+
             <div class="form-group">
                 <label for="eventStart">Start</label>
                 <input type="datetime-local" id="eventStart" required>
@@ -102,11 +120,16 @@
                 <div id="subtaskTypes" class="subtask-types"></div>
             </div>
 
+            <p id="actionSummary" class="action-summary hidden"></p>
+
             <input type="hidden" id="eventId">
             <input type="hidden" id="eventIssueKey">
 
             <div class="dialog-buttons">
-                <button type="button" id="deleteBtn" class="btn btn-danger">Delete</button>
+                <div class="dialog-buttons-left">
+                    <button type="button" id="deleteBtn" class="btn btn-danger">Delete</button>
+                    <button type="button" id="splitBtn" class="btn btn-secondary hidden">Split&hellip;</button>
+                </div>
                 <div class="dialog-buttons-right">
                     <button type="button" id="cancelBtn" class="btn btn-secondary">Cancel</button>
                     <button type="submit" class="btn btn-primary">Save</button>
@@ -152,7 +175,7 @@
 
             <div class="form-group managers-section hidden" id="managersSection">
                 <label>Managers</label>
-                <p class="help-text">Managers can view other users' calendars in read-only mode. Changes take effect immediately.</p>
+                <p class="help-text">Managers can view other users' calendars read-only. SDMs can also change that time: edits, moves and deletes are made with the SDM's own Jira access, and new time with the person's own JiraTime sign-in so they stay its author. Changes take effect immediately.</p>
                 <div class="manager-search">
                     <input type="text" id="managerSearch" placeholder="Search users to add as manager..." autocomplete="off">
                     <div class="manager-search-results hidden" id="managerSearchResults"></div>

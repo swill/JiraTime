@@ -35,7 +35,7 @@ ACTIVE_ISSUES_WEEKS = 4
 DONE_ISSUES_DAYS = 90
 
 # Super users - site administrator account IDs. Super users can impersonate
-# other users (view-only mode) and manage the in-app Manager list, which grants
-# the same impersonation ability without a config change.
+# other users, change their time (like SDMs) and manage the in-app Manager
+# list, where each person is a view-only Manager or an SDM who can edit.
 # Find your account ID by checking /api/user while logged in
 # SUPER_USERS = ["5a1234567890abcdef123456", "5b1234567890abcdef123456"]

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -66,21 +67,19 @@ func handleGetEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
-	session := getSessionFromRequest(r)
-	if session == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	// Block modifications when impersonating (view-only mode)
-	if isImpersonating(session) {
-		http.Error(w, "Cannot create events while impersonating another user", http.StatusForbidden)
+	wr, ok := newWorklogWriter(w, r)
+	if !ok {
 		return
 	}
 
 	var req CreateEventReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.IssueKey == "" || !validIssueKeys(req.IssueKey, req.SubtaskKey) {
+		http.Error(w, "Invalid issue key", http.StatusBadRequest)
 		return
 	}
 
@@ -91,28 +90,67 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	durationSeconds := req.DurationMin * 60
+	ctx := r.Context()
 
-	client := jiraClientFor(session)
+	// Created with the calendar owner's access so they are the author. Checked
+	// first: without it nothing may be written, not even a new sub-task.
+	author, err := wr.authorClient()
+	if err != nil {
+		writeChangeError(w, wr, "create worklog", err)
+		return
+	}
 
 	// Route the worklog to a billable sub-task when one was selected
-	targetKey, err := resolveWorklogTarget(r.Context(), client, req.IssueKey, req.SubtaskTypeID, req.SubtaskKey)
+	target, err := findWorklogTarget(ctx, wr.edit, req.IssueKey, req.SubtaskTypeID, req.SubtaskKey)
 	if err != nil {
 		logrus.Errorf("Failed to resolve worklog target: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to resolve sub-task: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	worklog, err := client.CreateWorklog(r.Context(), targetKey, start, durationSeconds, req.Description)
+	if wr.sdm {
+		// A sub-task created for a worklog the user then can't log is left empty
+		if err := wr.requirePermissions(ctx, author, true, target.keyOrParent(), permWorkOnIssues); err != nil {
+			writeChangeError(w, wr, "create worklog", err)
+			return
+		}
+	}
+
+	if err := target.createIfNeeded(ctx, wr.edit); err != nil {
+		logrus.Errorf("Failed to resolve worklog target: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to resolve sub-task: %v", err), http.StatusInternalServerError)
+		return
+	}
+	targetKey := target.key
+
+	body := worklogBody(formatJiraDateTime(start), durationSeconds, descriptionComment(req.Description))
+	worklog, err := author.createWorklog(ctx, targetKey, body)
 	if err != nil {
-		logrus.Errorf("Failed to create worklog: %v", err)
-		http.Error(w, fmt.Sprintf("Failed to create worklog: %v", err), http.StatusInternalServerError)
+		writeChangeError(w, wr, "create worklog", target.noteCreated(err))
 		return
 	}
 
 	// Mark this worklog as created by JiraTime
-	if err := client.SetWorklogProperty(r.Context(), targetKey, worklog.ID, worklogSourcePropertyKey, WorklogSource{CreatedBy: "jiratime"}); err != nil {
+	if err := author.SetWorklogProperty(ctx, targetKey, worklog.ID, worklogSourcePropertyKey, WorklogSource{CreatedBy: "jiratime"}); err != nil {
 		logrus.Warnf("Failed to set worklog source property: %v", err)
 		// Don't fail - worklog was created successfully
+	}
+
+	if wr.sdm {
+		detail := wr.stampCreated(ctx, targetKey, worklog.ID, body)
+		wr.markChange(ctx, author, targetKey, worklog.ID, "create")
+		if target.created {
+			cache.InvalidateHierarchy(wr.session.AccountID)
+		}
+		wr.audit(AuditRecord{
+			Action:      "create",
+			Outcome:     auditOK,
+			IssueKey:    targetKey,
+			WorklogID:   worklog.ID,
+			After:       &AuditWorklog{IssueKey: targetKey, Started: auditTime(start), TimeSpentSeconds: durationSeconds},
+			PriorPeriod: isPriorPeriod(start),
+			Detail:      detail,
+		})
 	}
 
 	// Return the created event
@@ -132,37 +170,26 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
-	session := getSessionFromRequest(r)
-	if session == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	wr, ok := newWorklogWriter(w, r)
+	if !ok {
 		return
 	}
 
-	// Block modifications when impersonating (view-only mode)
-	if isImpersonating(session) {
-		http.Error(w, "Cannot update events while impersonating another user", http.StatusForbidden)
-		return
-	}
-
-	// Extract event ID from URL path: /api/events/{id}
-	eventID := strings.TrimPrefix(r.URL.Path, "/api/events/")
-	if eventID == "" {
-		http.Error(w, "Missing event ID", http.StatusBadRequest)
-		return
-	}
-
-	// Parse event ID: {issueKey}-{worklogID}
-	lastDash := strings.LastIndex(eventID, "-")
-	if lastDash == -1 {
+	// Event ID from URL path: /api/events/{issueKey}-{worklogID}
+	issueKey, worklogID, ok := parseEventID(strings.TrimPrefix(r.URL.Path, "/api/events/"))
+	if !ok {
 		http.Error(w, "Invalid event ID format", http.StatusBadRequest)
 		return
 	}
-	issueKey := eventID[:lastDash]
-	worklogID := eventID[lastDash+1:]
 
 	var req UpdateEventReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if !validIssueKeys(req.ParentKey, req.SubtaskKey) {
+		http.Error(w, "Invalid issue key", http.StatusBadRequest)
 		return
 	}
 
@@ -173,27 +200,72 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	durationSeconds := req.DurationMin * 60
+	ctx := r.Context()
+	rec := AuditRecord{Action: "update", IssueKey: issueKey, WorklogID: worklogID}
 
-	client := jiraClientFor(session)
+	// An SDM may only change the viewed user's own worklogs; the current
+	// values also go in the audit record and undo a failed move
+	var before *JiraWorklog
+	if wr.sdm {
+		before, err = wr.loadWorklog(ctx, issueKey, worklogID)
+		if err != nil {
+			wr.auditFailure(rec, err)
+			writeChangeError(w, wr, "update worklog", err)
+			return
+		}
+		rec.Before = auditWorklogOf(issueKey, before)
+		started, _ := parseJiraDateTime(before.Started)
+		rec.PriorPeriod = isPriorPeriod(started) || isPriorPeriod(start)
+	}
 
 	// Dialog saves send ParentKey so the sub-task association can change; when
 	// the target differs from where the worklog lives, it has to move
 	// (drag/resize updates omit ParentKey and leave the association alone)
 	if req.ParentKey != "" {
-		targetKey, err := resolveWorklogTarget(r.Context(), client, req.ParentKey, req.SubtaskTypeID, req.SubtaskKey)
+		target, err := findWorklogTarget(ctx, wr.edit, req.ParentKey, req.SubtaskTypeID, req.SubtaskKey)
 		if err != nil {
 			logrus.Errorf("Failed to resolve worklog target: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to resolve sub-task: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		if targetKey != issueKey {
-			newID, err := moveWorklog(r.Context(), client, issueKey, worklogID, targetKey, start, durationSeconds, req.Description)
-			if err != nil {
-				logrus.Errorf("Failed to move worklog: %v", err)
-				http.Error(w, fmt.Sprintf("Failed to move worklog: %v", err), http.StatusInternalServerError)
+		if target.key != issueKey {
+			rec.Action = "move"
+			if wr.sdm {
+				if err := wr.checkMove(ctx, issueKey, target.keyOrParent()); err != nil {
+					writeChangeError(w, wr, "move worklog", err)
+					return
+				}
+			}
+
+			if err := target.createIfNeeded(ctx, wr.edit); err != nil {
+				logrus.Errorf("Failed to resolve worklog target: %v", err)
+				http.Error(w, fmt.Sprintf("Failed to resolve sub-task: %v", err), http.StatusInternalServerError)
 				return
 			}
+			rec.TargetKey = target.key
+
+			var newID string
+			if wr.sdm {
+				newID, rec.Detail, err = wr.move(ctx, issueKey, before, target.key, start, durationSeconds, req.Description)
+			} else {
+				body := worklogBody(formatJiraDateTime(start), durationSeconds, descriptionComment(req.Description))
+				newID, err = moveWorklog(ctx, wr.edit, wr.edit, issueKey, worklogID, target.key, body)
+			}
+			if err != nil {
+				err = target.noteCreated(err)
+				wr.auditFailure(rec, err)
+				writeChangeError(w, wr, "move worklog", err)
+				return
+			}
+
+			if target.created {
+				cache.InvalidateHierarchy(wr.session.AccountID)
+			}
+			rec.Outcome = auditOK
+			rec.NewID = strings.TrimPrefix(newID, target.key+"-")
+			rec.After = &AuditWorklog{IssueKey: target.key, Started: auditTime(start), TimeSpentSeconds: durationSeconds}
+			wr.audit(rec)
 
 			w.WriteHeader(http.StatusOK)
 			writeJSON(w, map[string]string{"status": "ok", "id": newID})
@@ -201,35 +273,46 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_, err = client.UpdateWorklog(r.Context(), issueKey, worklogID, start, durationSeconds, req.Description)
+	if wr.sdm {
+		err = wr.update(ctx, issueKey, before, start, durationSeconds, req.Description)
+	} else {
+		_, err = wr.edit.UpdateWorklog(ctx, issueKey, worklogID, start, durationSeconds, req.Description)
+	}
 	if err != nil {
-		logrus.Errorf("Failed to update worklog: %v", err)
-		http.Error(w, fmt.Sprintf("Failed to update worklog: %v", err), http.StatusInternalServerError)
+		writeChangeError(w, wr, "update worklog", err)
 		return
+	}
+
+	if wr.sdm {
+		wr.markChange(ctx, wr.edit, issueKey, worklogID, "update")
+		rec.Outcome = auditOK
+		rec.After = &AuditWorklog{IssueKey: issueKey, Started: auditTime(start), TimeSpentSeconds: durationSeconds}
+		wr.audit(rec)
 	}
 
 	w.WriteHeader(http.StatusOK)
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
-// moveWorklog re-homes a worklog onto another issue. Jira has no move API, so
-// this creates the worklog on the target first and then deletes the original -
-// the time is never silently lost, and a failed delete is rolled back so it is
-// never doubled either. Returns the new event ID.
-func moveWorklog(ctx context.Context, client *JiraClient, fromKey, worklogID, toKey string, start time.Time, durationSeconds int, description string) (string, error) {
-	worklog, err := client.CreateWorklog(ctx, toKey, start, durationSeconds, description)
+// moveWorklog re-homes a worklog onto another issue by creating it on the
+// target first (with createClient, whose user becomes the author) and then
+// deleting the original (with deleteClient) - the time is never silently
+// lost, and a failed delete is rolled back so it is never doubled either.
+// body is the new worklog. Returns the new event ID.
+func moveWorklog(ctx context.Context, createClient, deleteClient *JiraClient, fromKey, worklogID, toKey string, body map[string]interface{}) (string, error) {
+	worklog, err := createClient.createWorklog(ctx, toKey, body)
 	if err != nil {
 		return "", fmt.Errorf("failed to create worklog on %s: %w", toKey, err)
 	}
 
-	if err := client.SetWorklogProperty(ctx, toKey, worklog.ID, worklogSourcePropertyKey, WorklogSource{CreatedBy: "jiratime"}); err != nil {
+	if err := createClient.SetWorklogProperty(ctx, toKey, worklog.ID, worklogSourcePropertyKey, WorklogSource{CreatedBy: "jiratime"}); err != nil {
 		logrus.Warnf("Failed to set worklog source property: %v", err)
 	}
 
-	if err := client.DeleteWorklog(ctx, fromKey, worklogID); err != nil {
-		// Best-effort rollback of the copy so time is not double-counted
-		if rbErr := client.DeleteWorklog(ctx, toKey, worklog.ID); rbErr != nil {
-			return "", fmt.Errorf("failed to remove original worklog from %s AND failed to roll back the copy on %s - time may be logged twice, please fix in Jira: %v", fromKey, toKey, err)
+	if err := deleteClient.DeleteWorklog(ctx, fromKey, worklogID); err != nil {
+		// Roll back the copy so time is not double-counted
+		if rbErr := createClient.RollbackWorklog(ctx, toKey, worklog.ID); rbErr != nil {
+			return "", &partialError{msg: fmt.Sprintf("Failed to remove the original worklog from %s (%v) and failed to remove the copy (worklog %s) on %s (%v): the time is logged twice, please fix it in Jira.", fromKey, err, worklog.ID, toKey, rbErr)}
 		}
 		return "", fmt.Errorf("failed to remove original worklog from %s (change rolled back): %w", fromKey, err)
 	}
@@ -237,42 +320,169 @@ func moveWorklog(ctx context.Context, client *JiraClient, fromKey, worklogID, to
 	return toKey + "-" + worklog.ID, nil
 }
 
-func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
-	session := getSessionFromRequest(r)
-	if session == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+// handleSplitEvent splits a worklog in two: the original keeps the first part
+// of its time, and the rest becomes a new worklog by the same author, starting
+// where the first part ends, on the chosen issue (which may be the same one).
+func handleSplitEvent(w http.ResponseWriter, r *http.Request, eventID string) {
+	wr, ok := newWorklogWriter(w, r)
+	if !ok {
 		return
 	}
 
-	// Block modifications when impersonating (view-only mode)
-	if isImpersonating(session) {
-		http.Error(w, "Cannot delete events while impersonating another user", http.StatusForbidden)
-		return
-	}
-
-	// Extract event ID from URL path: /api/events/{id}
-	eventID := strings.TrimPrefix(r.URL.Path, "/api/events/")
-	if eventID == "" {
-		http.Error(w, "Missing event ID", http.StatusBadRequest)
-		return
-	}
-
-	// Parse event ID: {issueKey}-{worklogID}
-	lastDash := strings.LastIndex(eventID, "-")
-	if lastDash == -1 {
+	issueKey, worklogID, ok := parseEventID(eventID)
+	if !ok {
 		http.Error(w, "Invalid event ID format", http.StatusBadRequest)
 		return
 	}
-	issueKey := eventID[:lastDash]
-	worklogID := eventID[lastDash+1:]
 
-	client := jiraClientFor(session)
-
-	if err := client.DeleteWorklog(r.Context(), issueKey, worklogID); err != nil {
-		logrus.Errorf("Failed to delete worklog: %v", err)
-		http.Error(w, fmt.Sprintf("Failed to delete worklog: %v", err), http.StatusInternalServerError)
+	var req SplitEventReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
+
+	if req.ParentKey == "" || !validIssueKeys(req.ParentKey, req.SubtaskKey) {
+		http.Error(w, "Invalid issue key", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	rec := AuditRecord{Action: "split", IssueKey: issueKey, WorklogID: worklogID}
+
+	original, err := wr.loadWorklog(ctx, issueKey, worklogID)
+	if err != nil {
+		wr.auditFailure(rec, err)
+		writeChangeError(w, wr, "split worklog", err)
+		return
+	}
+	rec.Before = auditWorklogOf(issueKey, original)
+
+	start, err := parseJiraDateTime(original.Started)
+	if err != nil {
+		http.Error(w, "Failed to read the entry's start time", http.StatusInternalServerError)
+		return
+	}
+	rec.PriorPeriod = isPriorPeriod(start)
+
+	firstSeconds := req.DurationMin * 60
+	restSeconds := original.TimeSpentSeconds - firstSeconds
+	if firstSeconds <= 0 || restSeconds <= 0 {
+		http.Error(w, "The part kept on this entry must be shorter than the entry", http.StatusBadRequest)
+		return
+	}
+
+	// The new part is authored by the calendar owner; without their access
+	// nothing may be written
+	author, err := wr.authorClient()
+	if err != nil {
+		writeChangeError(w, wr, "split worklog", err)
+		return
+	}
+
+	target, err := findWorklogTarget(ctx, wr.edit, req.ParentKey, req.SubtaskTypeID, req.SubtaskKey)
+	if err != nil {
+		logrus.Errorf("Failed to resolve worklog target: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to resolve sub-task: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Make sure both halves can be written before writing either
+	if wr.sdm {
+		if err := wr.requirePermissions(ctx, wr.edit, false, issueKey, permEditAllWorklogs); err != nil {
+			writeChangeError(w, wr, "split worklog", err)
+			return
+		}
+		if err := wr.requirePermissions(ctx, author, true, target.keyOrParent(), permWorkOnIssues); err != nil {
+			writeChangeError(w, wr, "split worklog", err)
+			return
+		}
+	}
+
+	if err := target.createIfNeeded(ctx, wr.edit); err != nil {
+		logrus.Errorf("Failed to resolve worklog target: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to resolve sub-task: %v", err), http.StatusInternalServerError)
+		return
+	}
+	rec.TargetKey = target.key
+
+	// Create the new part first and then shorten the original, undoing the
+	// new part if that fails: time is never lost, and never counted twice
+	restStart := start.Add(time.Duration(firstSeconds) * time.Second)
+	restBody := worklogBody(formatJiraDateTime(restStart), restSeconds, rawComment(original.RawComment))
+	rest, err := author.createWorklog(ctx, target.key, restBody)
+	if err != nil {
+		writeChangeError(w, wr, "split worklog", target.noteCreated(err))
+		return
+	}
+
+	if err := author.SetWorklogProperty(ctx, target.key, rest.ID, worklogSourcePropertyKey, WorklogSource{CreatedBy: "jiratime"}); err != nil {
+		logrus.Warnf("Failed to set worklog source property: %v", err)
+	}
+
+	if err := wr.edit.ResizeWorklog(ctx, issueKey, original, firstSeconds); err != nil {
+		if rbErr := author.RollbackWorklog(ctx, target.key, rest.ID); rbErr != nil {
+			err = &partialError{msg: fmt.Sprintf("Failed to shorten the original entry on %s (%v) and failed to remove the new part (worklog %s) on %s (%v): %d minutes are logged twice, please fix it in Jira.", issueKey, err, rest.ID, target.key, rbErr, restSeconds/60)}
+			rec.NewID = rest.ID
+			wr.auditFailure(rec, err)
+			writeChangeError(w, wr, "split worklog", err)
+			return
+		}
+		writeChangeError(w, wr, "split worklog", fmt.Errorf("failed to shorten the original entry (split undone): %w", target.noteCreated(err)))
+		return
+	}
+
+	if wr.sdm {
+		rec.Detail = wr.stampCreated(ctx, target.key, rest.ID, restBody)
+		wr.markChange(ctx, wr.edit, issueKey, worklogID, "split")
+		wr.markChange(ctx, author, target.key, rest.ID, "split")
+		if target.created {
+			cache.InvalidateHierarchy(wr.session.AccountID)
+		}
+		rec.Outcome = auditOK
+		rec.NewID = rest.ID
+		rec.After = &AuditWorklog{IssueKey: issueKey, Started: auditTime(start), TimeSpentSeconds: firstSeconds}
+		rec.Extra = map[string]any{"new_worklog": AuditWorklog{IssueKey: target.key, Started: auditTime(restStart), TimeSpentSeconds: restSeconds}}
+		wr.audit(rec)
+	}
+
+	writeJSON(w, map[string]interface{}{"status": "ok", "ids": []string{issueKey + "-" + worklogID, target.key + "-" + rest.ID}})
+}
+
+func handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
+	wr, ok := newWorklogWriter(w, r)
+	if !ok {
+		return
+	}
+
+	// Event ID from URL path: /api/events/{issueKey}-{worklogID}
+	issueKey, worklogID, ok := parseEventID(strings.TrimPrefix(r.URL.Path, "/api/events/"))
+	if !ok {
+		http.Error(w, "Invalid event ID format", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	rec := AuditRecord{Action: "delete", IssueKey: issueKey, WorklogID: worklogID}
+
+	if wr.sdm {
+		before, err := wr.loadWorklog(ctx, issueKey, worklogID)
+		if err != nil {
+			wr.auditFailure(rec, err)
+			writeChangeError(w, wr, "delete worklog", err)
+			return
+		}
+		rec.Before = auditWorklogOf(issueKey, before)
+		started, _ := parseJiraDateTime(before.Started)
+		rec.PriorPeriod = isPriorPeriod(started)
+	}
+
+	if err := wr.edit.DeleteWorklog(ctx, issueKey, worklogID); err != nil {
+		writeChangeError(w, wr, "delete worklog", err)
+		return
+	}
+
+	rec.Outcome = auditOK
+	wr.audit(rec)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -380,8 +590,11 @@ func handleSearchIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SDMs correcting someone's time need issues that closed long ago too
+	allDone := isImpersonating(session) && CanEditOthers(session.AccountID)
+
 	client := jiraClientFor(session)
-	issues, err := client.SearchIssues(r.Context(), query)
+	issues, err := client.SearchIssues(r.Context(), query, allDone)
 	if err != nil {
 		logrus.Errorf("Failed to search issues: %v", err)
 		http.Error(w, "Failed to search issues", http.StatusInternalServerError)
@@ -426,13 +639,20 @@ func handleGetUser(w http.ResponseWriter, r *http.Request) {
 		"site_url":        session.SiteURL,
 		"is_super_user":   IsSuperUser(session.AccountID),
 		"is_manager":      IsManager(session.AccountID),
+		"is_sdm":          IsSDM(session.AccountID),
 		"can_impersonate": CanImpersonate(session.AccountID),
+		"can_edit_others": CanEditOthers(session.AccountID),
 	}
 
 	// Include impersonation info if active
 	if session.ImpersonatingID != "" {
 		response["impersonating_id"] = session.ImpersonatingID
 		response["impersonating_name"] = session.ImpersonatingName
+		// Whether time can be created (added, copied, split or moved) for
+		// them: it must be authored with their own JiraTime sign-in, so SDMs
+		// know before they try
+		_, err := accountTokens.validToken(session.ImpersonatingID)
+		response["impersonating_signed_in"] = err == nil || !isTokenRejected(err)
 	}
 
 	writeJSON(w, response)
@@ -465,11 +685,13 @@ func handleSearchUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return simplified user info
+	// Return simplified user info. HasJiraTime says whether JiraTime holds a
+	// sign-in for them, which an SDM needs to add time on their behalf.
 	type UserInfo struct {
 		AccountID   string `json:"account_id"`
 		DisplayName string `json:"display_name"`
 		AvatarURL   string `json:"avatar_url"`
+		HasJiraTime bool   `json:"has_jiratime"`
 	}
 
 	result := make([]UserInfo, len(users))
@@ -478,6 +700,7 @@ func handleSearchUsers(w http.ResponseWriter, r *http.Request) {
 			AccountID:   u.AccountID,
 			DisplayName: u.DisplayName,
 			AvatarURL:   u.AvatarURLs.Large,
+			HasJiraTime: accountTokens.get(u.AccountID) != nil,
 		}
 	}
 
@@ -516,8 +739,9 @@ func handleImpersonate(w http.ResponseWriter, r *http.Request) {
 	session.ImpersonatingName = req.DisplayName
 	saveSession(session)
 
-	// Audit trail: the viewer reads this user's time with the user's own Jira access
-	logrus.Infof("%s started viewing %s's calendar", session.AccountID, req.AccountID)
+	// Audit trail: the viewer reads this user's time with the user's own Jira
+	// access (and SDMs can change it)
+	logrus.Infof("%s started viewing %s's calendar (can edit: %t)", session.AccountID, req.AccountID, CanEditOthers(session.AccountID))
 
 	writeJSON(w, map[string]string{"status": "ok"})
 }
@@ -587,6 +811,12 @@ func handleSubtaskOptions(w http.ResponseWriter, r *http.Request, issueKey strin
 		mode = ""
 	}
 
+	// Sub-tasks can't have sub-tasks, so one of a type that isn't configured
+	// gets no options (logged, as it looks like a missing configuration)
+	if detail.Fields.IssueType.Subtask && len(configuredTypes) > 0 && subtaskTypeByID(configuredTypes, detail.Fields.IssueType.ID) == nil {
+		logrus.Infof("%s is a %q sub-task, which isn't one of project %s's configured sub-task types, so no sub-task options are offered", detail.Key, detail.Fields.IssueType.Name, detail.Fields.Project.Key)
+	}
+
 	// A configured sub-task resolves to its parent with the association pre-set
 	if detail.Fields.IssueType.Subtask && detail.Fields.Parent != nil && subtaskTypeByID(configuredTypes, detail.Fields.IssueType.ID) != nil {
 		res.CurrentTypeID = detail.Fields.IssueType.ID
@@ -601,6 +831,7 @@ func handleSubtaskOptions(w http.ResponseWriter, r *http.Request, issueKey strin
 	}
 
 	res.IssueKey = detail.Key
+	res.ProjectKey = detail.Fields.Project.Key
 	res.IssueSummary = detail.Fields.Summary
 	res.IssueTitle = fmt.Sprintf("[%s] %s", detail.Key, detail.Fields.Summary)
 
@@ -626,23 +857,39 @@ func handleSubtaskOptions(w http.ResponseWriter, r *http.Request, issueKey strin
 	writeJSON(w, res)
 }
 
-// resolveWorklogTarget determines which issue a worklog should be logged
-// against: a specific existing sub-task, a get-or-create sub-task of a
-// configured type (named after the type), or the parent issue itself. The
-// configured types are billable or non-billable depending on the project.
-func resolveWorklogTarget(ctx context.Context, client *JiraClient, parentKey, subtaskTypeID, subtaskKey string) (string, error) {
+// worklogTarget is the issue a worklog should be logged against: a specific
+// existing sub-task, a get-or-create sub-task of a configured type (named
+// after the type), or the parent issue itself. The configured types are
+// billable or non-billable depending on the project. Finding the target and
+// creating a missing sub-task are separate steps, so a change can be checked
+// before anything is created.
+type worklogTarget struct {
+	key       string // empty until a missing sub-task is created
+	parentKey string
+	created   bool // the sub-task was created for this change
+
+	// Set while the sub-task of this type still has to be created
+	createType *SubtaskType
+	projectID  string
+}
+
+// findWorklogTarget works out where a worklog should go without creating
+// anything
+func findWorklogTarget(ctx context.Context, client *JiraClient, parentKey, subtaskTypeID, subtaskKey string) (*worklogTarget, error) {
+	target := &worklogTarget{parentKey: parentKey}
 	if subtaskTypeID == "" && subtaskKey == "" {
-		return parentKey, nil
+		target.key = parentKey
+		return target, nil
 	}
 
 	detail, err := client.GetIssueDetail(ctx, parentKey)
 	if err != nil {
-		return "", fmt.Errorf("failed to get issue %s: %w", parentKey, err)
+		return nil, fmt.Errorf("failed to get issue %s: %w", parentKey, err)
 	}
 
 	configuredTypes, _, err := client.GetConfiguredSubtaskTypes(ctx, detail.Fields.Project.Key)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve sub-task types: %w", err)
+		return nil, fmt.Errorf("failed to resolve sub-task types: %w", err)
 	}
 
 	// Specific existing sub-task chosen - verify it belongs to the parent and
@@ -650,30 +897,138 @@ func resolveWorklogTarget(ctx context.Context, client *JiraClient, parentKey, su
 	if subtaskKey != "" {
 		for _, st := range detail.Fields.Subtasks {
 			if st.Key == subtaskKey && subtaskTypeByID(configuredTypes, st.Fields.IssueType.ID) != nil {
-				return subtaskKey, nil
+				target.key = subtaskKey
+				return target, nil
 			}
 		}
-		return "", fmt.Errorf("sub-task %s is not a configured sub-task of %s", subtaskKey, parentKey)
+		return nil, fmt.Errorf("sub-task %s is not a configured sub-task of %s", subtaskKey, parentKey)
 	}
 
 	// Type-only selection: reuse the sub-task named after the type, or create it
 	configuredType := subtaskTypeByID(configuredTypes, subtaskTypeID)
 	if configuredType == nil {
-		return "", fmt.Errorf("sub-task type %s is not available in project %s", subtaskTypeID, detail.Fields.Project.Key)
+		return nil, fmt.Errorf("sub-task type %s is not available in project %s", subtaskTypeID, detail.Fields.Project.Key)
 	}
 
 	for _, st := range detail.Fields.Subtasks {
 		if st.Fields.IssueType.ID == configuredType.ID && strings.EqualFold(st.Fields.Summary, configuredType.Name) {
-			return st.Key, nil
+			target.key = st.Key
+			return target, nil
 		}
 	}
 
-	newKey, err := client.CreateSubtask(ctx, detail.Fields.Project.ID, parentKey, configuredType.ID, configuredType.Name)
-	if err != nil {
-		return "", fmt.Errorf("failed to create sub-task: %w", err)
+	target.createType = configuredType
+	target.projectID = detail.Fields.Project.ID
+	return target, nil
+}
+
+// createIfNeeded creates the target sub-task if it does not exist yet
+func (t *worklogTarget) createIfNeeded(ctx context.Context, client *JiraClient) error {
+	if t.createType == nil {
+		return nil
 	}
 
-	return newKey, nil
+	newKey, err := client.CreateSubtask(ctx, t.projectID, t.parentKey, t.createType.ID, t.createType.Name)
+	if err != nil {
+		return fmt.Errorf("failed to create sub-task: %w", err)
+	}
+
+	t.key = newKey
+	t.created = true
+	t.createType = nil
+	return nil
+}
+
+// keyOrParent is the target, or its parent while the target sub-task has not
+// been created yet (permissions are checked there instead)
+func (t *worklogTarget) keyOrParent() string {
+	if t.key != "" {
+		return t.key
+	}
+	return t.parentKey
+}
+
+// noteCreated adds to an error that the target sub-task was created for this
+// change, so it is not left empty unnoticed
+func (t *worklogTarget) noteCreated(err error) error {
+	if !t.created {
+		return err
+	}
+	return fmt.Errorf("%w (sub-task %s was created for this change but has no time on it)", err, t.key)
+}
+
+// handleHierarchy returns one level of the SDM Move-to tree, loaded as it is
+// expanded:
+//   - ?project=KEY             the project and its epics
+//   - ?project=KEY&no_epic=1   the project's issues that have no epic
+//   - ?parent=KEY              an epic's child issues
+//
+// Issues come with their sub-tasks. It uses the viewer's own Jira access (it
+// picks where time goes, like search), and results are cached per viewer.
+func handleHierarchy(w http.ResponseWriter, r *http.Request) {
+	session := getSessionFromRequest(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := r.URL.Query()
+	project, parent := query.Get("project"), query.Get("parent")
+	client := jiraClientFor(session)
+
+	var cacheKey string
+	var load func(context.Context) (HierarchyRes, error)
+	switch {
+	case parent != "":
+		if !issueKeyPattern.MatchString(parent) {
+			http.Error(w, "Invalid issue key", http.StatusBadRequest)
+			return
+		}
+		cacheKey = "parent:" + parent
+		load = func(ctx context.Context) (HierarchyRes, error) { return client.GetChildIssues(ctx, parent) }
+	case project != "":
+		if !projectKeyPattern.MatchString(project) {
+			http.Error(w, "Invalid project key", http.StatusBadRequest)
+			return
+		}
+		if query.Get("no_epic") == "1" {
+			cacheKey = "noepic:" + project
+			load = func(ctx context.Context) (HierarchyRes, error) { return client.GetIssuesWithoutEpic(ctx, project) }
+		} else {
+			cacheKey = "project:" + project
+			load = func(ctx context.Context) (HierarchyRes, error) { return client.GetProjectEpics(ctx, project) }
+		}
+	default:
+		http.Error(w, "project or parent is required", http.StatusBadRequest)
+		return
+	}
+
+	if res, ok := cache.GetHierarchy(session.AccountID, cacheKey); ok {
+		writeJSON(w, res)
+		return
+	}
+
+	res, err := load(r.Context())
+	if errors.Is(err, errIssueNotFound) {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		logrus.Errorf("Failed to load issue hierarchy (%s): %v", cacheKey, err)
+		http.Error(w, "Failed to load issues", http.StatusInternalServerError)
+		return
+	}
+	if res.Truncated {
+		logrus.Infof("Issue hierarchy %s hit the %d issue limit", cacheKey, hierarchyLimit)
+	}
+
+	cache.SetHierarchy(session.AccountID, cacheKey, res)
+	writeJSON(w, res)
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {

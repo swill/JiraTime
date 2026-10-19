@@ -19,7 +19,10 @@ func (e *CacheEntry[T]) IsExpired() bool {
 
 type UserCache struct {
 	Issues *CacheEntry[[]IssuesByProject]
-	mu     sync.RWMutex
+	// Move-to tree levels, keyed by what was asked for (see handleHierarchy).
+	// Per user because Jira only returns the issues the user can see.
+	Hierarchy map[string]*CacheEntry[HierarchyRes]
+	mu        sync.RWMutex
 }
 
 type Cache struct {
@@ -94,6 +97,46 @@ func (c *Cache) InvalidateIssues(accountID string) {
 	defer uc.mu.Unlock()
 
 	uc.Issues = nil
+}
+
+func (c *Cache) GetHierarchy(accountID, key string) (HierarchyRes, bool) {
+	uc := c.getUserCache(accountID)
+
+	uc.mu.RLock()
+	defer uc.mu.RUnlock()
+
+	entry := uc.Hierarchy[key]
+	if entry == nil || entry.IsExpired() {
+		return HierarchyRes{}, false
+	}
+
+	return entry.Data, true
+}
+
+func (c *Cache) SetHierarchy(accountID, key string, res HierarchyRes) {
+	uc := c.getUserCache(accountID)
+
+	uc.mu.Lock()
+	defer uc.mu.Unlock()
+
+	if uc.Hierarchy == nil {
+		uc.Hierarchy = make(map[string]*CacheEntry[HierarchyRes])
+	}
+	uc.Hierarchy[key] = &CacheEntry[HierarchyRes]{
+		Data:      res,
+		ExpiresAt: time.Now().Add(cacheTTL),
+	}
+}
+
+// InvalidateHierarchy drops a user's cached Move-to tree, e.g. after they
+// created a sub-task that should now appear in it
+func (c *Cache) InvalidateHierarchy(accountID string) {
+	uc := c.getUserCache(accountID)
+
+	uc.mu.Lock()
+	defer uc.mu.Unlock()
+
+	uc.Hierarchy = nil
 }
 
 func (c *Cache) InvalidateAll(accountID string) {

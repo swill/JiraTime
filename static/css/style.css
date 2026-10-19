@@ -642,6 +642,185 @@ dialog h2 {
     display: none;
 }
 
+/* SDM editing: Move-to picker, split and the "what Save will do" summary */
+.move-section.hidden,
+.split-section.hidden,
+.move-search-results.hidden,
+.move-tree-children.hidden,
+.action-summary.hidden,
+.dialog-buttons .btn.hidden {
+    display: none;
+}
+
+.dialog-buttons-left {
+    display: flex;
+    gap: 8px;
+}
+
+.move-target {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 13px;
+    color: #172b4d;
+    margin-bottom: 6px;
+}
+
+.link-button {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 12px;
+    color: #0052cc;
+    cursor: pointer;
+    text-decoration: underline;
+    white-space: nowrap;
+}
+
+.move-search {
+    position: relative;
+}
+
+.move-search-results {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    max-height: 220px;
+    overflow-y: auto;
+    z-index: 10;
+}
+
+.move-result,
+.move-tree-toggle,
+.move-tree-issue {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font: inherit;
+    font-size: 13px;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.move-result {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    border-radius: 0;
+}
+
+.move-result:hover,
+.move-tree-toggle:hover,
+.move-tree-issue:hover {
+    background: #f0f4f8;
+}
+
+.move-result-parent {
+    font-size: 11px;
+    color: #666;
+}
+
+.move-tree {
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #fafbfc;
+    margin-top: 6px;
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 4px;
+}
+
+.move-tree-project {
+    font-size: 12px;
+    font-weight: 600;
+    color: #666;
+    padding: 4px 8px;
+}
+
+.move-tree-caret {
+    width: 12px;
+    flex-shrink: 0;
+    color: #666;
+}
+
+.move-tree-children {
+    margin-left: 18px;
+    border-left: 2px solid #e1e4e8;
+    padding-left: 4px;
+}
+
+.move-tree-issue.subtask {
+    padding-left: 24px;
+}
+
+.move-tree-issue.done {
+    opacity: 0.7;
+}
+
+.move-tree-issue.selected {
+    background: #deebff;
+    font-weight: 500;
+}
+
+.move-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    width: 100%;
+}
+
+.move-summary {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Spells out a move or split before it is saved */
+.action-summary {
+    font-size: 13px;
+    color: #172b4d;
+    background: #deebff;
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin: 0 0 8px;
+}
+
+/* Entries an SDM changed on the user's behalf */
+.fc-event.sdm-changed {
+    box-shadow: inset 0 -3px 0 #ffab00;
+}
+
+/* An SDM changing someone's calendar: blue rather than the view-only amber */
+.sdm-mode .impersonation-bar {
+    background: #e9f2ff;
+    border-color: #0052cc;
+}
+
+.no-jiratime-badge {
+    margin-left: auto;
+    font-size: 11px;
+    color: #974f0c;
+    background: #fff4e5;
+    border-radius: 10px;
+    padding: 2px 8px;
+    white-space: nowrap;
+}
+
 /* Buttons */
 .btn {
     padding: 8px 16px;
@@ -993,6 +1172,12 @@ dialog h2 {
 #settingsDialog select:focus {
     outline: none;
     border-color: #0052cc;
+}
+
+#settingsDialog .manager-item select.manager-role {
+    width: auto;
+    padding: 4px 6px;
+    font-size: 12px;
 }
 
 /* ============================================================
@@ -1417,4 +1602,64 @@ html[data-theme="dark"] .subtask-hint {
 html[data-theme="dark"] .dialog-note {
     color: #e0e0e0;
     background: #4a3f1a;
+}
+
+/* SDM editing - dark theme */
+html[data-theme="dark"] .move-target,
+html[data-theme="dark"] .action-summary {
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .action-summary {
+    background: #2d3d55;
+}
+
+html[data-theme="dark"] .link-button {
+    color: #4d9de0;
+}
+
+html[data-theme="dark"] .move-search-results {
+    background: #252526;
+    border-color: #555;
+}
+
+html[data-theme="dark"] .move-tree {
+    background: #2d2d2d;
+    border-color: #555;
+}
+
+html[data-theme="dark"] .move-result:hover,
+html[data-theme="dark"] .move-tree-toggle:hover,
+html[data-theme="dark"] .move-tree-issue:hover {
+    background: #37414f;
+}
+
+html[data-theme="dark"] .move-tree-issue.selected {
+    background: #2d3d55;
+}
+
+html[data-theme="dark"] .move-tree-children {
+    border-left-color: #44546d;
+}
+
+html[data-theme="dark"] .move-tree-project,
+html[data-theme="dark"] .move-tree-caret,
+html[data-theme="dark"] .move-result-parent {
+    color: #aaa;
+}
+
+html[data-theme="dark"] .sdm-mode .impersonation-bar {
+    background: #1c2b41;
+    border-color: #4d9de0;
+}
+
+html[data-theme="dark"] .no-jiratime-badge {
+    color: #f5b14c;
+    background: #3d3410;
+}
+
+html[data-theme="dark"] #settingsDialog .manager-item select.manager-role {
+    background: #2d2d2d;
+    border-color: #555;
+    color: #e0e0e0;
 }

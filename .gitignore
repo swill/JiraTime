@@ -13,6 +13,9 @@ sessions.json
 managers.json
 *.json.tmp
 
+# SDM audit trail (forward to central logging)
+audit.log
+
 # Let's Encrypt certificates
 certs/
 
