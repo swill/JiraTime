@@ -665,3 +665,54 @@ func TestAuditTimesAreUTC(t *testing.T) {
 		t.Errorf("before %q, after %q: want the same UTC time", before.Started, auditTime(after))
 	}
 }
+
+func TestOnlySuperUsersCanChangeRoles(t *testing.T) {
+	t.Chdir(t.TempDir())
+	viper.Set("SESSION_SECRET", "test-secret-that-is-at-least-32-characters")
+	viper.Set("SUPER_USERS", []string{"admin"})
+	t.Cleanup(func() { viper.Set("SUPER_USERS", nil) })
+	setTestManager(t, "viewer", RoleManager)
+	setTestManager(t, "fixer", RoleSDM)
+
+	request := func(session *UserSession, method, target, body string) int {
+		sessionID := createSession(session)
+		defer deleteSession(sessionID)
+		req := httptest.NewRequest(method, target, strings.NewReader(body))
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionID + "." + signSession(sessionID)})
+		rec := httptest.NewRecorder()
+		if strings.HasPrefix(target, "/api/managers/") {
+			handleManagerByIDRoute(rec, req)
+		} else {
+			handleManagersRoute(rec, req)
+		}
+		return rec.Code
+	}
+
+	attempts := []struct {
+		who     string
+		session *UserSession
+	}{
+		{"a manager", &UserSession{AccountID: "viewer"}},
+		{"an SDM", &UserSession{AccountID: "fixer"}},
+		// Impersonating a super user does not lend their rights
+		{"an SDM viewing as a super user", &UserSession{AccountID: "fixer", ImpersonatingID: "admin"}},
+	}
+	for _, a := range attempts {
+		if code := request(a.session, http.MethodPost, "/api/managers", `{"account_id":"viewer","display_name":"viewer","role":"sdm"}`); code != http.StatusForbidden {
+			t.Errorf("%s promoting a manager: status %d, want 403", a.who, code)
+		}
+		if code := request(a.session, http.MethodDelete, "/api/managers/fixer", ``); code != http.StatusForbidden {
+			t.Errorf("%s removing an SDM: status %d, want 403", a.who, code)
+		}
+		if code := request(a.session, http.MethodGet, "/api/managers", ``); code != http.StatusForbidden {
+			t.Errorf("%s listing managers: status %d, want 403", a.who, code)
+		}
+	}
+	if IsSDM("viewer") || !IsSDM("fixer") {
+		t.Error("roles changed by someone who isn't a super user")
+	}
+
+	if code := request(&UserSession{AccountID: "admin"}, http.MethodPost, "/api/managers", `{"account_id":"viewer","display_name":"viewer","role":"sdm"}`); code != http.StatusCreated || !IsSDM("viewer") {
+		t.Errorf("super user promoting a manager: status %d, want 201 and the SDM role", code)
+	}
+}
