@@ -87,17 +87,17 @@ func IsSDM(accountID string) bool {
 	return ok && m.Role == RoleSDM
 }
 
-// CanImpersonate checks if the given account ID may view other users'
+// CanImpersonate checks if the session's user may view other users'
 // calendars: super users (site admins from config) and app-managed managers
-func CanImpersonate(accountID string) bool {
-	return IsSuperUser(accountID) || IsManager(accountID)
+func CanImpersonate(session *UserSession) bool {
+	return IsSuperUser(session) || IsManager(session.AccountID)
 }
 
-// CanEditOthers checks if the given account ID may change the time on a
+// CanEditOthers checks if the session's user may change the time on a
 // calendar it is viewing as someone else: super users and SDMs. Checked on
 // every write, so a role change takes effect on the next request.
-func CanEditOthers(accountID string) bool {
-	return IsSuperUser(accountID) || IsSDM(accountID)
+func CanEditOthers(session *UserSession) bool {
+	return IsSuperUser(session) || IsSDM(session.AccountID)
 }
 
 // ListManagers returns all managers sorted by display name
@@ -124,7 +124,7 @@ func handleManagersRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !IsSuperUser(session.AccountID) {
+	if !IsSuperUser(session) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -207,7 +207,7 @@ func handleManagerByIDRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !IsSuperUser(session.AccountID) {
+	if !IsSuperUser(session) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}

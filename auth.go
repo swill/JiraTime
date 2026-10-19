@@ -153,6 +153,14 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		AvatarURL:   user.AvatarURLs.Large,
 	}
 
+	// Super users are matched on the sign-in email, so take it from
+	// Atlassian's identity service, which also says whether it is verified
+	if identity, err := getAtlassianIdentity(r.Context(), token.AccessToken); err != nil {
+		logrus.Warnf("Failed to get Atlassian identity for %s, so super user access is unavailable until it can be read: %v", user.AccountID, err)
+	} else {
+		applyIdentity(session, identity)
+	}
+
 	// Save token and session data for persistence. The new token replaces the
 	// account's previous one for all of its sessions.
 	accountTokens.set(user.AccountID, token)
@@ -190,7 +198,7 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		// Revoke in-flight impersonation if the user's manager/super-user
 		// status was removed since it started (fail closed)
-		if session.ImpersonatingID != "" && !CanImpersonate(session.AccountID) {
+		if session.ImpersonatingID != "" && !CanImpersonate(session) {
 			logrus.Infof("Clearing impersonation for %s: no longer a manager or super user", session.AccountID)
 			session.ImpersonatingID = ""
 			session.ImpersonatingName = ""
@@ -357,6 +365,85 @@ func signSession(sessionID string) string {
 	h := hmac.New(sha256.New, []byte(viper.GetString("SESSION_SECRET")))
 	h.Write([]byte(sessionID))
 	return base64.URLEncoding.EncodeToString(h.Sum(nil))
+}
+
+// atlassianMeURL is Atlassian's identity endpoint (read:me scope); a variable
+// so tests can point it at a mock server
+var atlassianMeURL = "https://api.atlassian.com/me"
+
+// AtlassianIdentity is the signed-in account as Atlassian's identity service
+// reports it
+type AtlassianIdentity struct {
+	AccountID     string `json:"account_id"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+}
+
+// getAtlassianIdentity reads the signed-in account's identity: its sign-in
+// email and whether Atlassian has verified it
+func getAtlassianIdentity(ctx context.Context, accessToken string) (*AtlassianIdentity, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", atlassianMeURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("identity request failed: %d %s", resp.StatusCode, body)
+	}
+
+	var identity AtlassianIdentity
+	if err := json.NewDecoder(resp.Body).Decode(&identity); err != nil {
+		return nil, err
+	}
+	return &identity, nil
+}
+
+// applyIdentity records an account's verified sign-in email on its session
+// (super users are matched on it). Reports whether anything changed.
+func applyIdentity(session *UserSession, identity *AtlassianIdentity) bool {
+	if identity.AccountID != "" && identity.AccountID != session.AccountID {
+		logrus.Errorf("Atlassian identity is for %s, not %s; ignoring it", identity.AccountID, session.AccountID)
+		return false
+	}
+	if identity.Email == "" {
+		return false
+	}
+	changed := session.Email != identity.Email || session.EmailVerified != identity.EmailVerified
+	session.Email = identity.Email
+	session.EmailVerified = identity.EmailVerified
+	return changed
+}
+
+// refreshIdentity looks up a restored session's verified email with the
+// account's saved token, saving it for next time. On failure the session
+// carries on without super user access until a later restore succeeds.
+func refreshIdentity(session *UserSession) {
+	token, err := accountTokens.validToken(session.AccountID)
+	if err != nil {
+		logrus.Warnf("Can't read Atlassian identity for %s: %v", session.AccountID, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	identity, err := getAtlassianIdentity(ctx, token.AccessToken)
+	if err != nil {
+		logrus.Warnf("Failed to get Atlassian identity for %s: %v", session.AccountID, err)
+		return
+	}
+	if applyIdentity(session, identity) {
+		saveSessionData(session.AccountID, session)
+	}
 }
 
 func getAccessibleResource(accessToken string) (string, string, error) {
@@ -673,6 +760,12 @@ func tryRestoreSession(accountID, sessionID string) *UserSession {
 	// A saved token is needed to act for the user (it is refreshed on use)
 	if accountTokens.get(accountID) == nil {
 		return nil
+	}
+
+	// Sessions saved before super users were matched by email have no
+	// verified email yet: look it up once with the account's token
+	if !session.EmailVerified {
+		refreshIdentity(session)
 	}
 
 	// Re-register in memory

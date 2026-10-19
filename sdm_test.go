@@ -210,15 +210,90 @@ func TestManagerCannotChangeImpersonatedTime(t *testing.T) {
 }
 
 func TestCanEditOthers(t *testing.T) {
-	viper.Set("SUPER_USERS", []string{"admin"})
+	viper.Set("SUPER_USERS", []string{"admin@example.com"})
 	t.Cleanup(func() { viper.Set("SUPER_USERS", nil) })
 	setTestManager(t, "viewer", RoleManager)
 	setTestManager(t, "fixer", RoleSDM)
 
-	for account, want := range map[string]bool{"admin": true, "fixer": true, "viewer": false, "nobody": false} {
-		if got := CanEditOthers(account); got != want {
-			t.Errorf("CanEditOthers(%s) = %t, want %t", account, got, want)
+	cases := map[string]struct {
+		session           *UserSession
+		edit, impersonate bool
+	}{
+		"super user": {&UserSession{AccountID: "admin", Email: "admin@example.com", EmailVerified: true}, true, true},
+		"SDM":        {&UserSession{AccountID: "fixer"}, true, true},
+		"manager":    {&UserSession{AccountID: "viewer"}, false, true},
+		"anyone":     {&UserSession{AccountID: "nobody"}, false, false},
+	}
+	for name, c := range cases {
+		if got := CanEditOthers(c.session); got != c.edit {
+			t.Errorf("%s: CanEditOthers = %t, want %t", name, got, c.edit)
 		}
+		if got := CanImpersonate(c.session); got != c.impersonate {
+			t.Errorf("%s: CanImpersonate = %t, want %t", name, got, c.impersonate)
+		}
+	}
+}
+
+func TestSuperUsersAreMatchedByVerifiedEmail(t *testing.T) {
+	viper.Set("SUPER_USERS", []string{" Will.Stevens@Example.com ", "557058:old-account-id"})
+	t.Cleanup(func() { viper.Set("SUPER_USERS", nil) })
+
+	cases := []struct {
+		name    string
+		session UserSession
+		want    bool
+	}{
+		{"same email, different case", UserSession{AccountID: "a", Email: "will.stevens@example.com", EmailVerified: true}, true},
+		{"email not verified by Atlassian", UserSession{AccountID: "a", Email: "will.stevens@example.com"}, false},
+		{"other email", UserSession{AccountID: "b", Email: "someone@example.com", EmailVerified: true}, false},
+		{"no email", UserSession{AccountID: "c", EmailVerified: true}, false},
+		// Account IDs no longer count (they only get a startup warning)
+		{"account ID listed", UserSession{AccountID: "557058:old-account-id", EmailVerified: true}, false},
+	}
+	for _, c := range cases {
+		if got := IsSuperUser(&c.session); got != c.want {
+			t.Errorf("%s: IsSuperUser = %t, want %t", c.name, got, c.want)
+		}
+	}
+}
+
+func TestRestoredSessionGetsVerifiedEmail(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	identity := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer access" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeTestJSON(w, http.StatusOK, map[string]interface{}{"account_id": "acct", "email": "Admin@Example.com", "email_verified": true})
+	}))
+	t.Cleanup(identity.Close)
+	original := atlassianMeURL
+	atlassianMeURL = identity.URL
+	t.Cleanup(func() { atlassianMeURL = original })
+
+	store := testTokenStore(t, nil)
+	store.set("acct", &oauth2.Token{AccessToken: "access", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)})
+	originalTokens := accountTokens
+	accountTokens = store
+	t.Cleanup(func() { accountTokens = originalTokens })
+
+	// Saved before super users were matched by email: no verified email yet
+	saveSessionData("acct", &UserSession{AccountID: "acct", CloudID: "cloud", Email: ""})
+
+	session := tryRestoreSession("acct", "restored-session")
+	t.Cleanup(func() { deleteSession("restored-session") })
+	if session == nil || session.Email != "Admin@Example.com" || !session.EmailVerified {
+		t.Fatalf("restored session %+v, want the verified email from Atlassian", session)
+	}
+	if saved := loadSessionData().Sessions["acct"]; !saved.EmailVerified {
+		t.Error("verified email not saved, so it would be looked up again on every restore")
+	}
+
+	viper.Set("SUPER_USERS", []string{"admin@example.com"})
+	t.Cleanup(func() { viper.Set("SUPER_USERS", nil) })
+	if !IsSuperUser(session) {
+		t.Error("restored super user not recognized")
 	}
 }
 
@@ -669,10 +744,11 @@ func TestAuditTimesAreUTC(t *testing.T) {
 func TestOnlySuperUsersCanChangeRoles(t *testing.T) {
 	t.Chdir(t.TempDir())
 	viper.Set("SESSION_SECRET", "test-secret-that-is-at-least-32-characters")
-	viper.Set("SUPER_USERS", []string{"admin"})
+	viper.Set("SUPER_USERS", []string{"admin@example.com"})
 	t.Cleanup(func() { viper.Set("SUPER_USERS", nil) })
 	setTestManager(t, "viewer", RoleManager)
 	setTestManager(t, "fixer", RoleSDM)
+	admin := &UserSession{AccountID: "admin", Email: "admin@example.com", EmailVerified: true}
 
 	request := func(session *UserSession, method, target, body string) int {
 		sessionID := createSession(session)
@@ -712,7 +788,7 @@ func TestOnlySuperUsersCanChangeRoles(t *testing.T) {
 		t.Error("roles changed by someone who isn't a super user")
 	}
 
-	if code := request(&UserSession{AccountID: "admin"}, http.MethodPost, "/api/managers", `{"account_id":"viewer","display_name":"viewer","role":"sdm"}`); code != http.StatusCreated || !IsSDM("viewer") {
+	if code := request(admin, http.MethodPost, "/api/managers", `{"account_id":"viewer","display_name":"viewer","role":"sdm"}`); code != http.StatusCreated || !IsSDM("viewer") {
 		t.Errorf("super user promoting a manager: status %d, want 201 and the SDM role", code)
 	}
 }

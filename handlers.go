@@ -591,7 +591,7 @@ func handleSearchIssues(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// SDMs correcting someone's time need issues that closed long ago too
-	allDone := isImpersonating(session) && CanEditOthers(session.AccountID)
+	allDone := isImpersonating(session) && CanEditOthers(session)
 
 	client := jiraClientFor(session)
 	issues, err := client.SearchIssues(r.Context(), query, allDone)
@@ -637,11 +637,11 @@ func handleGetUser(w http.ResponseWriter, r *http.Request) {
 		"email":           session.Email,
 		"avatar_url":      session.AvatarURL,
 		"site_url":        session.SiteURL,
-		"is_super_user":   IsSuperUser(session.AccountID),
+		"is_super_user":   IsSuperUser(session),
 		"is_manager":      IsManager(session.AccountID),
 		"is_sdm":          IsSDM(session.AccountID),
-		"can_impersonate": CanImpersonate(session.AccountID),
-		"can_edit_others": CanEditOthers(session.AccountID),
+		"can_impersonate": CanImpersonate(session),
+		"can_edit_others": CanEditOthers(session),
 	}
 
 	// Include impersonation info if active
@@ -666,7 +666,7 @@ func handleSearchUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only super users and managers can search for users to impersonate
-	if !CanImpersonate(session.AccountID) {
+	if !CanImpersonate(session) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -715,7 +715,7 @@ func handleImpersonate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only super users and managers can impersonate
-	if !CanImpersonate(session.AccountID) {
+	if !CanImpersonate(session) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -741,7 +741,7 @@ func handleImpersonate(w http.ResponseWriter, r *http.Request) {
 
 	// Audit trail: the viewer reads this user's time with the user's own Jira
 	// access (and SDMs can change it)
-	logrus.Infof("%s started viewing %s's calendar (can edit: %t)", session.AccountID, req.AccountID, CanEditOthers(session.AccountID))
+	logrus.Infof("%s started viewing %s's calendar (can edit: %t)", session.AccountID, req.AccountID, CanEditOthers(session))
 
 	writeJSON(w, map[string]string{"status": "ok"})
 }

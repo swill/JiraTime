@@ -91,7 +91,7 @@ func newWorklogWriter(w http.ResponseWriter, r *http.Request) (*worklogWriter, b
 	}
 
 	// Managers only view; SDMs and super users can change what they view
-	if isImpersonating(session) && !CanEditOthers(session.AccountID) {
+	if isImpersonating(session) && !CanEditOthers(session) {
 		http.Error(w, "Cannot change time while viewing another user's calendar", http.StatusForbidden)
 		return nil, false
 	}

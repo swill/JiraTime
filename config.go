@@ -1,17 +1,31 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 )
 
-// IsSuperUser checks if the given account ID is configured as a super user
-func IsSuperUser(accountID string) bool {
-	superUsers := viper.GetStringSlice("SUPER_USERS")
-	for _, su := range superUsers {
-		if su == accountID {
-			return true
+// IsSuperUser reports whether a session belongs to a configured super user.
+// SUPER_USERS lists sign-in emails, matched case-insensitively against the
+// account's email as Atlassian's identity service reports it, and only once
+// Atlassian reports that email verified: an address the user hasn't proven
+// they own grants nothing.
+func IsSuperUser(session *UserSession) bool {
+	email := strings.ToLower(strings.TrimSpace(session.Email))
+	if email == "" {
+		return false
+	}
+	for _, su := range viper.GetStringSlice("SUPER_USERS") {
+		if strings.ToLower(strings.TrimSpace(su)) != email {
+			continue
 		}
+		if !session.EmailVerified {
+			warnOnce("unverified/"+session.AccountID, "Account %s's email matches SUPER_USERS, but Atlassian doesn't report it as verified, so super user access is refused", session.AccountID)
+			return false
+		}
+		return true
 	}
 	return false
 }
@@ -54,6 +68,13 @@ func initConfig() {
 	// Validate SESSION_SECRET length
 	if len(viper.GetString("SESSION_SECRET")) < 32 {
 		logrus.Fatal("SESSION_SECRET must be at least 32 characters")
+	}
+
+	// Super users used to be listed by account ID; those entries now match nobody
+	for _, su := range viper.GetStringSlice("SUPER_USERS") {
+		if !strings.Contains(su, "@") {
+			logrus.Warnf("SUPER_USERS entry %q isn't an email address and is ignored: super users are matched by their Atlassian sign-in email", su)
+		}
 	}
 
 	if viper.IsSet("DONE_ISSUES_WEEKS") {

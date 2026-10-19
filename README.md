@@ -284,18 +284,18 @@ The three steps must happen in this order — skipping or reordering the first i
 Managers, SDMs and super users can view team members' calendars to review time entries without logging in as that user.
 
 There are three roles:
-- **Super users** are site administrators defined in `config.toml` (`SUPER_USERS`). They can impersonate other users, change their time like an SDM, and are the only ones who can manage the Manager list.
+- **Super users** are site administrators listed by sign-in email in `config.toml` (`SUPER_USERS`). They can impersonate other users, change their time like an SDM, and are the only ones who can manage the Manager list.
 - **Managers** are administered inside the app by super users and can view other users' calendars read-only.
 - **SDMs** (Service Delivery Managers) are on the same list with the SDM role and can also change the time they view (see [SDM Editing](#sdm-editing)).
 
 The list is persisted in `managers.json` next to the binary; entries saved before roles existed are Managers.
 
 **Setup:**
-1. Add super user account IDs to the `SUPER_USERS` list in `config.toml`:
+1. Add super users' Atlassian sign-in emails to the `SUPER_USERS` list in `config.toml`:
    ```toml
-   SUPER_USERS = ["5a1234567890abcdef123456", "5b1234567890abcdef123456"]
+   SUPER_USERS = ["someone@aptum.com", "someone.else@aptum.com"]
    ```
-   To find your account ID, check the `/api/user` endpoint while logged in.
+   Matching ignores case. JiraTime reads each user's email from Atlassian's identity service when they sign in, and an email only counts once Atlassian reports it as verified. Entries that aren't email addresses (such as account IDs from older configs) are ignored, with a warning in the server log at startup.
 2. As a super user, open Settings (gear icon ⚙ in the sidebar footer) and use the **Managers** section to add or remove people and choose each one's role (Manager or SDM). Changes take effect immediately — removing a manager also ends any impersonation they have in progress, and changing an SDM to Manager blocks their next change.
 
 **Usage:**
@@ -367,7 +367,7 @@ The Day/Week view you choose is also remembered in your browser and kept when th
 | `HOURS_TARGET` | No | 40 | Weekly hours target for the widget |
 | `ACTIVE_ISSUES_WEEKS` | No | 4 | Weeks of activity for Active Issues filter |
 | `DONE_ISSUES_DAYS` | No | 90 | Days after completion that Done issues can still have time logged (replaces `DONE_ISSUES_WEEKS`) |
-| `SUPER_USERS` | No | [] | Site administrator account IDs: can impersonate and edit other users' time, and manage Managers and SDMs in-app |
+| `SUPER_USERS` | No | [] | Site administrators' Atlassian sign-in emails (case-insensitive, must be verified by Atlassian): can impersonate and edit other users' time, and manage Managers and SDMs in-app |
 
 Environment variables can override config file values (e.g., `JIRA_CLIENT_ID=xxx ./jiratime`).
 

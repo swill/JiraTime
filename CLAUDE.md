@@ -44,7 +44,7 @@ make deploy   # Deploy to remote server (requires __config.sh)
   - `HOURS_TARGET`: Weekly hours target for widget (default: 40)
   - `ACTIVE_ISSUES_WEEKS`: Activity window for Active Issues (default: 4)
   - `DONE_ISSUES_DAYS`: How long Done issues stay available to log time against (default: 90)
-  - `SUPER_USERS`: Site administrator account IDs; can impersonate and edit other users' time (like SDMs) and manage Managers/SDMs in-app (default: [])
+  - `SUPER_USERS`: Site administrators' Atlassian sign-in emails (case-insensitive); can impersonate and edit other users' time (like SDMs) and manage Managers/SDMs in-app (default: []). Entries without "@" are warned about at startup and ignored
 
 ### Code Style Reference
 The `../fitops` and `../timework` projects demonstrate preferred patterns:
@@ -146,7 +146,7 @@ The `../betterwork` codebase is useful for understanding the existing functional
 
 ### Manager Impersonation
 - Three roles can view other users' calendars:
-  - **Super users** (defined in `SUPER_USERS` config) are site administrators; they can impersonate, edit like SDMs, and are the only ones who can manage Managers/SDMs
+  - **Super users** (`SUPER_USERS` config, by email) are site administrators; they can impersonate, edit like SDMs, and are the only ones who can manage Managers/SDMs. `IsSuperUser(session)` matches the session's `Email` only when `EmailVerified`; both come from Atlassian's identity endpoint (`GET https://api.atlassian.com/me`, `read:me` scope, `getAtlassianIdentity`) at sign-in, and sessions saved without a verified email look it up when restored (`refreshIdentity`). `CanImpersonate`/`CanEditOthers` take the session; Manager/SDM roles stay keyed by account ID
   - **Managers** are administered in-app by super users (persisted in `managers.json` with `role: "manager"`, loaded into memory at startup) and view other calendars read-only
   - **SDMs** (Service Delivery Managers) are on the same list with `role: "sdm"` and can also change the time they view (see SDM Editing); entries without a role load as Managers, and re-adding someone without a role keeps theirs
 - `CanImpersonate` (super users, Managers, SDMs) gates viewing; `CanEditOthers` (super users, SDMs) is checked on every write, so a role change applies on the next request

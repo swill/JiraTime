@@ -14,8 +14,11 @@ type UserSession struct {
 	CloudID     string `json:"cloud_id"`
 	SiteURL     string `json:"site_url"`
 	DisplayName string `json:"display_name"`
-	Email       string `json:"email"`
-	AvatarURL   string `json:"avatar_url"`
+	// Sign-in email from Atlassian's identity service; super users are
+	// matched on it, and only when Atlassian reports it verified
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified,omitempty"`
+	AvatarURL     string `json:"avatar_url"`
 	// Impersonation fields
 	ImpersonatingID   string `json:"impersonating_id,omitempty"`
 	ImpersonatingName string `json:"impersonating_name,omitempty"`

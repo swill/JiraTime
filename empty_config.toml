@@ -34,8 +34,9 @@ ACTIVE_ISSUES_WEEKS = 4
 # How many days Done issues stay available (for logging time on recently completed work)
 DONE_ISSUES_DAYS = 90
 
-# Super users - site administrator account IDs. Super users can impersonate
+# Super users - site administrators. Super users can impersonate
 # other users, change their time (like SDMs) and manage the in-app Manager
 # list, where each person is a view-only Manager or an SDM who can edit.
-# Find your account ID by checking /api/user while logged in
-# SUPER_USERS = ["5a1234567890abcdef123456", "5b1234567890abcdef123456"]
+# List them by Atlassian sign-in email (case-insensitive). An email only counts
+# once Atlassian reports it as verified; entries that aren't emails are ignored.
+# SUPER_USERS = ["someone@aptum.com", "someone.else@aptum.com"]
