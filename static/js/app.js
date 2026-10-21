@@ -363,6 +363,7 @@
                         issueId: e.issue_id,
                         worklogId: e.worklog_id,
                         description: e.description,
+                        commentFormatted: !!e.comment_formatted,
                         fromJiraTime: e.from_jiratime,
                         parentKey: e.parent_key,
                         subtaskTypeId: e.subtask_type_id,
@@ -442,13 +443,16 @@
             // Revert the original event position
             info.revert();
 
-            // Create a new event at the drop location
-            await createEvent(
-                event.extendedProps.issueKey,
-                event.start,
-                getDurationMinutes(event),
-                event.extendedProps.description || ''
-            );
+            // Create a new event at the drop location; a copy of an entry
+            // without a description opens the dialog so one can be added
+            const description = event.extendedProps.description || '';
+            if (!description.trim()) {
+                if (checkCanCreate()) {
+                    await openNewEntryDialog(event.extendedProps.issueKey, event.title, event.start, getDurationMinutes(event));
+                }
+                return;
+            }
+            await createEvent(event.extendedProps.issueKey, event.start, getDurationMinutes(event), description);
             return;
         }
 
@@ -523,20 +527,42 @@
         }
     }
 
-    // Start the create flow for an issue dropped/tapped onto the calendar.
-    // Projects with sub-tasks configured (billable or non-billable) open the
-    // edit dialog so a sub-task can be chosen; other projects keep the fast
-    // one-step logging.
+    // Start the create flow for an issue dropped/tapped onto the calendar:
+    // every entry needs a description, so this always opens the dialog for a
+    // new 30-minute entry
     async function startCreateFlow(issueKey, issueSummary, start) {
-        if (isViewOnlyMode()) {
-            alert('Cannot create events while viewing another user\'s calendar');
-            return;
-        }
-        if (!canAddTime()) {
-            alert(noSignInMessage());
+        if (!checkCanCreate()) {
             return;
         }
 
+        const options = await openNewEntryDialog(issueKey, `[${issueKey}] ${issueSummary}`, start, 30);
+
+        // A configured sub-task resolves to its parent; track the parent as recent
+        if (options) {
+            addToRecentIssues(options.issue_key, options.issue_summary);
+        } else {
+            addToRecentIssues(issueKey, issueSummary);
+        }
+    }
+
+    // Whether new time can be logged on the calendar being viewed (says why not)
+    function checkCanCreate() {
+        if (isViewOnlyMode()) {
+            alert('Cannot create events while viewing another user\'s calendar');
+            return false;
+        }
+        if (!canAddTime()) {
+            alert(noSignInMessage());
+            return false;
+        }
+        return true;
+    }
+
+    // Open the dialog for a new entry on an issue, with its sub-task choices
+    // when the project has billable or non-billable sub-tasks configured.
+    // Returns the sub-task options (null when they couldn't be loaded: the
+    // entry can still be logged, just not to a sub-task).
+    async function openNewEntryDialog(issueKey, issueTitle, start, durationMin) {
         let options = null;
         showLoading();
         try {
@@ -547,16 +573,8 @@
             hideLoading();
         }
 
-        if (!options || !options.subtask_types || options.subtask_types.length === 0) {
-            // No sub-tasks configured - create immediately
-            addToRecentIssues(issueKey, issueSummary);
-            await createEvent(issueKey, start, 30, '');
-            return;
-        }
-
-        // A configured sub-task resolves to its parent; track the parent as recent
-        addToRecentIssues(options.issue_key, options.issue_summary);
-        openCreateDialog(options, start);
+        openCreateDialog(options, issueKey, issueTitle, start, durationMin);
+        return options;
     }
 
     async function fetchSubtaskOptions(issueKey) {
@@ -582,12 +600,7 @@
     }
 
     async function createEvent(issueKey, start, durationMin, description, subtaskTypeId, subtaskKey) {
-        if (isViewOnlyMode()) {
-            alert('Cannot create events while viewing another user\'s calendar');
-            return;
-        }
-        if (!canAddTime()) {
-            alert(noSignInMessage());
+        if (!checkCanCreate()) {
             return;
         }
         if (!confirmPriorPeriod(start)) {
@@ -634,14 +647,14 @@
         }
         showLoading();
         try {
+            // No description: the server keeps the comment exactly as stored
             const eventId = `${event.extendedProps.issueKey}-${event.extendedProps.worklogId}`;
             const response = await apiFetch(`/api/events/${encodeURIComponent(eventId)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     start: event.start.toISOString(),
-                    duration_min: getDurationMinutes(event),
-                    description: event.extendedProps.description || ''
+                    duration_min: getDurationMinutes(event)
                 })
             });
 
@@ -717,6 +730,7 @@
         const deleteBtn = document.getElementById('deleteBtn');
 
         initMovePicker();
+        document.getElementById('eventDescription').addEventListener('input', fitDescription);
         document.getElementById('splitBtn').addEventListener('click', () => setSplitMode(!splitMode));
         document.getElementById('splitDuration').addEventListener('input', updateActionSummary);
 
@@ -761,11 +775,21 @@
             const eventId = document.getElementById('eventId').value;
             const start = new Date(document.getElementById('eventStart').value);
             const duration = parseInt(document.getElementById('eventDuration').value, 10);
-            const description = document.getElementById('eventDescription').value;
+            const descriptionEl = document.getElementById('eventDescription');
+            const description = descriptionEl.value;
             const issueKey = document.getElementById('eventIssueKey').value;
             const subtaskTypeId = selectedSubtaskTypeId;
             const subtaskKey = selectedSubtaskKey;
             const subtaskOptions = dialogSubtaskOptions;
+
+            // Jira can't make a worklog description mandatory, so JiraTime
+            // does: the field is required, and only spaces counts as empty.
+            // A split leaves the description as it is.
+            if (!splitMode && !description.trim()) {
+                descriptionEl.value = '';
+                descriptionEl.reportValidity();
+                return;
+            }
 
             if (eventId && splitMode) {
                 const keep = parseInt(document.getElementById('splitDuration').value, 10);
@@ -854,7 +878,8 @@
         dialogEntry = {
             start: event.start,
             durationMin: getDurationMinutes(event),
-            description: event.extendedProps.description || ''
+            description: event.extendedProps.description || '',
+            commentFormatted: !!event.extendedProps.commentFormatted
         };
 
         // Load sub-task options; a worklog on a configured sub-task resolves to
@@ -899,6 +924,26 @@
         setupMoveSection(!readOnly && isSDMMode() && canMove && !!dialogSubtaskOptions);
 
         dialog.showModal();
+        fitDescription();
+        // Saving needs a description, so point to it when there isn't one
+        if (!readOnly && !dialogEntry.description.trim()) {
+            document.getElementById('eventDescription').focus();
+        }
+    }
+
+    // Size the description to show the whole comment (measured once the
+    // dialog is open); CSS caps the height, after which it scrolls
+    function fitDescription() {
+        const el = document.getElementById('eventDescription');
+        el.style.height = 'auto';
+        el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+    }
+
+    // Editing a comment written with formatting in Jira saves it as plain
+    // text, so say so while that's possible
+    function updateDescriptionNote() {
+        const show = !!(dialogEntry && dialogEntry.commentFormatted) && !dialogReadOnly && !splitMode;
+        document.getElementById('descriptionNote').classList.toggle('hidden', !show);
     }
 
     // Lock the dialog fields and show why (an empty note hides it)
@@ -913,9 +958,9 @@
         noteEl.classList.toggle('hidden', !note);
     }
 
-    // Open the dialog to create a new entry (used when the issue's project has
-    // billable or non-billable sub-tasks configured)
-    function openCreateDialog(options, start) {
+    // Open the dialog to create a new entry. options are the issue's sub-task
+    // options (null without them, when the time goes on issueKey itself).
+    function openCreateDialog(options, issueKey, issueTitle, start, durationMin) {
         const dialog = document.getElementById('editDialog');
         const title = document.getElementById('dialogTitle');
         const deleteBtn = document.getElementById('deleteBtn');
@@ -927,10 +972,10 @@
         dialogEntry = null;
 
         document.getElementById('eventId').value = '';
-        document.getElementById('eventIssue').value = options.issue_title;
-        document.getElementById('eventIssueKey').value = options.issue_key;
+        document.getElementById('eventIssue').value = options ? options.issue_title : issueTitle;
+        document.getElementById('eventIssueKey').value = options ? options.issue_key : issueKey;
         document.getElementById('eventStart').value = formatDateTimeLocal(start);
-        document.getElementById('eventDuration').value = 30;
+        document.getElementById('eventDuration').value = durationMin;
         document.getElementById('eventDescription').value = '';
 
         renderSubtaskSection(options, false);
@@ -945,6 +990,9 @@
         setupMoveSection(false);
 
         dialog.showModal();
+        fitDescription();
+        // Every entry needs a description, so start there
+        document.getElementById('eventDescription').focus();
     }
 
     async function splitEvent(eventId, keepMin, parentKey, subtaskTypeId, subtaskKey) {
@@ -1000,6 +1048,7 @@
             document.getElementById('eventStart').value = formatDateTimeLocal(dialogEntry.start);
             document.getElementById('eventDuration').value = dialogEntry.durationMin;
             document.getElementById('eventDescription').value = dialogEntry.description;
+            fitDescription();
             const half = Math.round(dialogEntry.durationMin / 2 / 15) * 15;
             splitDuration.value = Math.min(Math.max(half, 1), dialogEntry.durationMin - 1);
             splitDuration.max = dialogEntry.durationMin - 1;
@@ -1009,6 +1058,7 @@
             document.getElementById(id).readOnly = on || dialogReadOnly;
         });
 
+        updateDescriptionNote();
         updateActionSummary();
     }
 

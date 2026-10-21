@@ -486,6 +486,16 @@ dialog h2 {
     color: #666;
 }
 
+/* Grows to show the whole comment (fitDescription), then scrolls */
+#eventDescription {
+    max-height: 40vh;
+    overflow-y: auto;
+}
+
+.description-note.hidden {
+    display: none;
+}
+
 .dialog-buttons {
     display: flex;
     justify-content: space-between;

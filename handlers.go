@@ -66,6 +66,10 @@ func handleGetEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, events)
 }
 
+// descriptionRequired is the error for a new or dialog-saved entry without a
+// description (the worklog comment)
+const descriptionRequired = "A description is required"
+
 func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	wr, ok := newWorklogWriter(w, r)
 	if !ok {
@@ -80,6 +84,12 @@ func handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 
 	if req.IssueKey == "" || !validIssueKeys(req.IssueKey, req.SubtaskKey) {
 		http.Error(w, "Invalid issue key", http.StatusBadRequest)
+		return
+	}
+
+	// Jira can't make a worklog comment mandatory, so JiraTime does
+	if strings.TrimSpace(req.Description) == "" {
+		http.Error(w, descriptionRequired, http.StatusBadRequest)
 		return
 	}
 
@@ -193,6 +203,14 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Dialog saves need a description like new entries do. Drag/resize
+	// updates don't send one (the comment is kept as it is), so entries
+	// logged without one can still be moved.
+	if req.Description != nil && strings.TrimSpace(*req.Description) == "" {
+		http.Error(w, descriptionRequired, http.StatusBadRequest)
+		return
+	}
+
 	start, err := time.Parse(time.RFC3339, req.Start)
 	if err != nil {
 		http.Error(w, "Invalid start date", http.StatusBadRequest)
@@ -203,20 +221,18 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	rec := AuditRecord{Action: "update", IssueKey: issueKey, WorklogID: worklogID}
 
-	// An SDM may only change the viewed user's own worklogs; the current
-	// values also go in the audit record and undo a failed move
-	var before *JiraWorklog
-	if wr.sdm {
-		before, err = wr.loadWorklog(ctx, issueKey, worklogID)
-		if err != nil {
-			wr.auditFailure(rec, err)
-			writeChangeError(w, wr, "update worklog", err)
-			return
-		}
-		rec.Before = auditWorklogOf(issueKey, before)
-		started, _ := parseJiraDateTime(before.Started)
-		rec.PriorPeriod = isPriorPeriod(started) || isPriorPeriod(start)
+	// The current worklog: its stored comment is kept unless the description
+	// was edited (commentFor), an SDM may only change the viewed user's own
+	// worklogs, and the current values go in the audit record
+	before, err := wr.loadWorklog(ctx, issueKey, worklogID)
+	if err != nil {
+		wr.auditFailure(rec, err)
+		writeChangeError(w, wr, "update worklog", err)
+		return
 	}
+	rec.Before = auditWorklogOf(issueKey, before)
+	started, _ := parseJiraDateTime(before.Started)
+	rec.PriorPeriod = isPriorPeriod(started) || isPriorPeriod(start)
 
 	// Dialog saves send ParentKey so the sub-task association can change; when
 	// the target differs from where the worklog lives, it has to move
@@ -249,7 +265,7 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 			if wr.sdm {
 				newID, rec.Detail, err = wr.move(ctx, issueKey, before, target.key, start, durationSeconds, req.Description)
 			} else {
-				body := worklogBody(formatJiraDateTime(start), durationSeconds, descriptionComment(req.Description))
+				body := worklogBody(formatJiraDateTime(start), durationSeconds, commentFor(before, req.Description))
 				newID, err = moveWorklog(ctx, wr.edit, wr.edit, issueKey, worklogID, target.key, body)
 			}
 			if err != nil {
@@ -273,12 +289,7 @@ func handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if wr.sdm {
-		err = wr.update(ctx, issueKey, before, start, durationSeconds, req.Description)
-	} else {
-		_, err = wr.edit.UpdateWorklog(ctx, issueKey, worklogID, start, durationSeconds, req.Description)
-	}
-	if err != nil {
+	if err := wr.update(ctx, issueKey, before, start, durationSeconds, req.Description); err != nil {
 		writeChangeError(w, wr, "update worklog", err)
 		return
 	}

@@ -87,12 +87,28 @@ func (f *sdmJira) handle(w http.ResponseWriter, r *http.Request, body map[string
 // It runs in a temporary directory so the audit log can be read back.
 func newSDMTest(t *testing.T, role string, tokens map[string]string) (*sdmJira, *mockJira, func(method, target, body string) *httptest.ResponseRecorder) {
 	t.Helper()
-	t.Chdir(t.TempDir())
-	viper.Set("SESSION_SECRET", "test-secret-that-is-at-least-32-characters")
-	viper.Set("BASE_URL", "https://jiratime.example")
 	if role != "" {
 		setTestManager(t, "sdm", role)
 	}
+	session := &UserSession{AccountID: "sdm", DisplayName: "Sam SDM", CloudID: "cloud", ImpersonatingID: "target", ImpersonatingName: "Tara Target"}
+	return newWriteTest(t, session, tokens)
+}
+
+// newOwnCalendarTest signs in "target", the author of the fake's worklog, on
+// their own calendar
+func newOwnCalendarTest(t *testing.T) (*sdmJira, *mockJira, func(method, target, body string) *httptest.ResponseRecorder) {
+	t.Helper()
+	session := &UserSession{AccountID: "target", DisplayName: "Tara Target", CloudID: "cloud"}
+	return newWriteTest(t, session, map[string]string{"target": "target-access"})
+}
+
+// newWriteTest signs in the given session, with saved tokens for the given
+// accounts, against an sdmJira
+func newWriteTest(t *testing.T, session *UserSession, tokens map[string]string) (*sdmJira, *mockJira, func(method, target, body string) *httptest.ResponseRecorder) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	viper.Set("SESSION_SECRET", "test-secret-that-is-at-least-32-characters")
+	viper.Set("BASE_URL", "https://jiratime.example")
 
 	store := testTokenStore(t, nil)
 	for account, access := range tokens {
@@ -105,10 +121,9 @@ func newSDMTest(t *testing.T, role string, tokens map[string]string) (*sdmJira, 
 	fake := &sdmJira{author: "target", missingPerms: map[string]bool{}, fail: map[string]int{}}
 	mock, _ := newMockJira(t, fake.handle)
 
-	session := &UserSession{AccountID: "sdm", DisplayName: "Sam SDM", CloudID: "cloud", ImpersonatingID: "target", ImpersonatingName: "Tara Target"}
 	sessionID := createSession(session)
 	t.Cleanup(func() { deleteSession(sessionID) })
-	t.Cleanup(func() { cache.InvalidateAll("sdm") })
+	t.Cleanup(func() { cache.InvalidateAll(session.AccountID) })
 
 	do := func(method, target, body string) *httptest.ResponseRecorder {
 		handler := handleEventByID
@@ -117,7 +132,7 @@ func newSDMTest(t *testing.T, role string, tokens map[string]string) (*sdmJira, 
 		}
 		req := httptest.NewRequest(method, target, strings.NewReader(body))
 		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionID + "." + signSession(sessionID)})
-		req.AddCookie(&http.Cookie{Name: accountIDCookie, Value: "sdm." + signSession("sdm")})
+		req.AddCookie(&http.Cookie{Name: accountIDCookie, Value: session.AccountID + "." + signSession(session.AccountID)})
 		rec := httptest.NewRecorder()
 		requireAuth(handler)(rec, req)
 		return rec
@@ -148,6 +163,13 @@ func findRequest(t *testing.T, mock *mockJira, method, path string) recordedRequ
 	}
 	t.Fatalf("no %s %s request was made", method, path)
 	return recordedRequest{}
+}
+
+// sameJSON reports whether two values encode to the same JSON
+func sameJSON(a, b any) bool {
+	aj, errA := json.Marshal(a)
+	bj, errB := json.Marshal(b)
+	return errA == nil && errB == nil && string(aj) == string(bj)
 }
 
 func hasRequest(mock *mockJira, method, path string) bool {
@@ -331,7 +353,7 @@ func TestSDMCreatesTimeAsTheViewedUser(t *testing.T) {
 func TestSDMCreateNeedsViewedUsersSignIn(t *testing.T) {
 	_, mock, do := newSDMTest(t, RoleSDM, map[string]string{"sdm": "sdm-access"})
 
-	rec := do(http.MethodPost, "/api/events", `{"issue_key":"ABC-2","start":"2026-10-13T09:00:00Z","duration_min":30}`)
+	rec := do(http.MethodPost, "/api/events", `{"issue_key":"ABC-2","start":"2026-10-13T09:00:00Z","duration_min":30,"description":"Forgot this"}`)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status %d, want 409: %s", rec.Code, rec.Body.String())
 	}
@@ -347,7 +369,7 @@ func TestSDMCreateBlockedWhenViewedUserCannotLogWork(t *testing.T) {
 	fake, mock, do := newSDMTest(t, RoleSDM, bothTokens)
 	fake.missingPerms[permWorkOnIssues] = true
 
-	rec := do(http.MethodPost, "/api/events", `{"issue_key":"ABC-2","start":"2026-10-13T09:00:00Z","duration_min":30}`)
+	rec := do(http.MethodPost, "/api/events", `{"issue_key":"ABC-2","start":"2026-10-13T09:00:00Z","duration_min":30,"description":"Forgot this"}`)
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "Work On Issues") {
 		t.Fatalf("status %d %q, want 403 naming Work On Issues", rec.Code, rec.Body.String())
 	}
@@ -359,7 +381,7 @@ func TestSDMCreateBlockedWhenViewedUserCannotLogWork(t *testing.T) {
 func TestSDMUpdateUsesSDMsOwnAccess(t *testing.T) {
 	_, mock, do := newSDMTest(t, RoleSDM, bothTokens)
 
-	rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":60,"description":"Original note"}`)
+	rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":60}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -373,9 +395,9 @@ func TestSDMUpdateUsesSDMsOwnAccess(t *testing.T) {
 	if put.Body["timeSpentSeconds"] != float64(3600) {
 		t.Errorf("updated to %v seconds, want 3600", put.Body["timeSpentSeconds"])
 	}
-	// The dialog only knows the first line; the rest of the comment must survive
-	if comment, _ := json.Marshal(put.Body["comment"]); !strings.Contains(string(comment), "Second paragraph") {
-		t.Errorf("saved comment %s lost the original's second paragraph", comment)
+	// A drag doesn't send the description: the comment must stay as stored
+	if !sameJSON(put.Body["comment"], testWorklogComment) {
+		t.Errorf("saved comment %v, want the stored one unchanged", put.Body["comment"])
 	}
 
 	records := readAudit(t)
@@ -410,7 +432,7 @@ func TestSDMCannotChangeAnotherUsersWorklog(t *testing.T) {
 func TestSDMMoveRecreatesWorklogAsItsAuthor(t *testing.T) {
 	_, mock, do := newSDMTest(t, RoleSDM, bothTokens)
 
-	rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":90,"description":"Original note","parent_key":"ABC-2"}`)
+	rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":90,"description":"Original note\nSecond paragraph","parent_key":"ABC-2"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -442,7 +464,7 @@ func TestSDMMoveUndoneWhenOriginalCannotBeDeleted(t *testing.T) {
 	fake, mock, do := newSDMTest(t, RoleSDM, bothTokens)
 	fake.fail["DELETE /issue/ABC-1/worklog/100"] = http.StatusForbidden
 
-	rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":90,"description":"Original note","parent_key":"ABC-2"}`)
+	rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":90,"description":"Original note\nSecond paragraph","parent_key":"ABC-2"}`)
 	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "rolled back") {
 		t.Fatalf("status %d %q, want 500 saying the move was rolled back", rec.Code, rec.Body.String())
 	}
@@ -457,7 +479,7 @@ func TestSDMMoveUndoneWhenOriginalCannotBeDeleted(t *testing.T) {
 func TestSDMMoveNeedsViewedUsersSignIn(t *testing.T) {
 	_, mock, do := newSDMTest(t, RoleSDM, map[string]string{"sdm": "sdm-access"})
 
-	rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":90,"description":"Original note","parent_key":"ABC-2"}`)
+	rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":90,"description":"Original note\nSecond paragraph","parent_key":"ABC-2"}`)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Tara Target needs to sign in") {
 		t.Fatalf("status %d %q, want 409 saying who needs to sign in", rec.Code, rec.Body.String())
 	}
@@ -561,10 +583,10 @@ func TestKeysAreValidatedBeforeReachingJira(t *testing.T) {
 	_, mock, do := newSDMTest(t, RoleSDM, bothTokens)
 
 	attempts := []struct{ method, target, body string }{
-		{http.MethodPost, "/api/events", `{"issue_key":"ABC-1/../../myself","start":"2026-10-13T09:00:00Z","duration_min":30}`},
-		{http.MethodPost, "/api/events", `{"issue_key":"ABC-1","subtask_key":"x?y","start":"2026-10-13T09:00:00Z","duration_min":30}`},
+		{http.MethodPost, "/api/events", `{"issue_key":"ABC-1/../../myself","start":"2026-10-13T09:00:00Z","duration_min":30,"description":"Note"}`},
+		{http.MethodPost, "/api/events", `{"issue_key":"ABC-1","subtask_key":"x?y","start":"2026-10-13T09:00:00Z","duration_min":30,"description":"Note"}`},
 		{http.MethodPut, "/api/events/ABC-1-1x", `{"start":"2026-10-13T09:00:00Z","duration_min":30}`},
-		{http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":30,"parent_key":"../ABC-2"}`},
+		{http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":30,"description":"Note","parent_key":"../ABC-2"}`},
 		{http.MethodDelete, "/api/events/..-100", ``},
 	}
 	for _, a := range attempts {
@@ -574,6 +596,76 @@ func TestKeysAreValidatedBeforeReachingJira(t *testing.T) {
 	}
 	if n := requestCount(mock); n != 0 {
 		t.Errorf("invalid keys made %d Jira calls, want 0", n)
+	}
+}
+
+func TestDialogSavesNeedADescription(t *testing.T) {
+	_, mock, do := newSDMTest(t, RoleSDM, bothTokens)
+
+	attempts := []struct{ method, target, body string }{
+		{http.MethodPost, "/api/events", `{"issue_key":"ABC-2","start":"2026-10-13T09:00:00Z","duration_min":30}`},
+		{http.MethodPost, "/api/events", `{"issue_key":"ABC-2","start":"2026-10-13T09:00:00Z","duration_min":30,"description":" \n "}`},
+		{http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":90,"description":"","parent_key":"ABC-1"}`},
+		{http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":90,"description":" ","parent_key":"ABC-2"}`},
+		{http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":90,"description":"\n"}`},
+	}
+	for _, a := range attempts {
+		if rec := do(a.method, a.target, a.body); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), descriptionRequired) {
+			t.Errorf("%s %s %s: status %d %q, want 400 saying a description is required", a.method, a.target, a.body, rec.Code, rec.Body.String())
+		}
+	}
+	if n := requestCount(mock); n != 0 {
+		t.Errorf("entries without a description made %d Jira calls, want 0", n)
+	}
+
+	// Dragging or resizing doesn't edit the description, so entries logged
+	// without one can still be moved
+	if rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T10:00:00Z","duration_min":90}`); rec.Code != http.StatusOK {
+		t.Errorf("drag update without a description: status %d %q, want 200", rec.Code, rec.Body.String())
+	}
+}
+
+// Changes that leave the description alone (drags, and dialog saves of the
+// text as shown) keep the comment exactly as Jira stores it, formatting and all
+func TestOwnCalendarChangesKeepTheStoredComment(t *testing.T) {
+	_, mock, do := newOwnCalendarTest(t)
+
+	if rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T10:00:00Z","duration_min":60}`); rec.Code != http.StatusOK {
+		t.Fatalf("drag: status %d: %s", rec.Code, rec.Body.String())
+	}
+	put := findRequest(t, mock, http.MethodPut, "/issue/ABC-1/worklog/100")
+	if put.Auth != targetAccess || put.Body["timeSpentSeconds"] != float64(3600) {
+		t.Errorf("updated with %q to %v seconds, want your own access and 3600", put.Auth, put.Body["timeSpentSeconds"])
+	}
+	if !sameJSON(put.Body["comment"], testWorklogComment) {
+		t.Errorf("drag saved comment %v, want the stored one unchanged", put.Body["comment"])
+	}
+
+	if rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":90,"description":"Original note\nSecond paragraph","parent_key":"ABC-2"}`); rec.Code != http.StatusOK {
+		t.Fatalf("move: status %d: %s", rec.Code, rec.Body.String())
+	}
+	create := findRequest(t, mock, http.MethodPost, "/issue/ABC-2/worklog")
+	if !sameJSON(create.Body["comment"], testWorklogComment) {
+		t.Errorf("moved worklog's comment %v, want the stored one unchanged", create.Body["comment"])
+	}
+	if !hasRequest(mock, http.MethodDelete, "/issue/ABC-1/worklog/100") {
+		t.Error("move left the original worklog in place")
+	}
+
+	if records := readAudit(t); len(records) != 0 {
+		t.Errorf("audit records %+v for changes to your own calendar", records)
+	}
+}
+
+func TestOwnCalendarEditedDescriptionReplacesComment(t *testing.T) {
+	_, mock, do := newOwnCalendarTest(t)
+
+	if rec := do(http.MethodPut, "/api/events/ABC-1-100", `{"start":"2026-10-13T09:00:00Z","duration_min":90,"description":"Rewritten note\nLine two","parent_key":"ABC-1"}`); rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	comment := findRequest(t, mock, http.MethodPut, "/issue/ABC-1/worklog/100").Body["comment"]
+	if !sameJSON(comment, buildADFComment("Rewritten note\nLine two")) {
+		t.Errorf("saved comment %v, want the edited description, one paragraph per line", comment)
 	}
 }
 

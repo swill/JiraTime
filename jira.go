@@ -466,27 +466,22 @@ func (c *JiraClient) GetMyWorklogsForPeriod(ctx context.Context, start, end time
 				continue
 			}
 
-			// Extract comment text
-			description := ""
-			if wl.Comment != nil && len(wl.Comment.Content) > 0 {
-				if len(wl.Comment.Content[0].Content) > 0 {
-					description = wl.Comment.Content[0].Content[0].Text
-				}
-			}
-
 			event := CalendarEvent{
-				ID:              fmt.Sprintf("%s-%s", issue.Key, wl.ID),
-				Title:           title,
-				Start:           startTime,
-				End:             startTime.Add(time.Duration(wl.TimeSpentSeconds) * time.Second),
-				IssueKey:        issue.Key,
-				IssueID:         issue.ID,
-				WorklogID:       wl.ID,
-				Description:     description,
-				FromJiraTime:    wl.hasProperty(worklogSourcePropertyKey),
-				ParentKey:       parentKey,
-				SubtaskTypeID:   subtaskTypeID,
-				SubtaskTypeName: subtaskTypeName,
+				ID:        fmt.Sprintf("%s-%s", issue.Key, wl.ID),
+				Title:     title,
+				Start:     startTime,
+				End:       startTime.Add(time.Duration(wl.TimeSpentSeconds) * time.Second),
+				IssueKey:  issue.Key,
+				IssueID:   issue.ID,
+				WorklogID: wl.ID,
+				// The same text commentFor compares against, so saving an
+				// entry whose description wasn't edited keeps its comment
+				Description:      wl.description(),
+				CommentFormatted: wl.commentFormatted(),
+				FromJiraTime:     wl.hasProperty(worklogSourcePropertyKey),
+				ParentKey:        parentKey,
+				SubtaskTypeID:    subtaskTypeID,
+				SubtaskTypeName:  subtaskTypeName,
 			}
 			if change := wl.sdmChange(); change != nil {
 				event.SDMChangedBy = change.DisplayName
@@ -577,10 +572,6 @@ func (c *JiraClient) createWorklog(ctx context.Context, issueKey string, body ma
 	}
 
 	return &worklog, nil
-}
-
-func (c *JiraClient) UpdateWorklog(ctx context.Context, issueKey, worklogID string, started time.Time, durationSeconds int, description string) (*JiraWorklog, error) {
-	return c.putWorklog(ctx, issueKey, worklogID, worklogBody(formatJiraDateTime(started), durationSeconds, descriptionComment(description)))
 }
 
 // ResizeWorklog changes a worklog's duration, writing its start and comment
@@ -759,25 +750,6 @@ func parseJiraDateTime(s string) (time.Time, error) {
 // formatJiraDateTime formats time for Jira API
 func formatJiraDateTime(t time.Time) string {
 	return t.Format("2006-01-02T15:04:05.000-0700")
-}
-
-// buildADFComment creates an Atlassian Document Format comment
-func buildADFComment(text string) map[string]interface{} {
-	return map[string]interface{}{
-		"type":    "doc",
-		"version": 1,
-		"content": []map[string]interface{}{
-			{
-				"type": "paragraph",
-				"content": []map[string]interface{}{
-					{
-						"type": "text",
-						"text": text,
-					},
-				},
-			},
-		},
-	}
 }
 
 // SetWorklogProperty stores a property on a worklog

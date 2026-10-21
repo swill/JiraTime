@@ -215,7 +215,7 @@ func (wr *worklogWriter) auditFailure(rec AuditRecord, err error) {
 // gave the worklog a new ID anyway and left the old one counted by JiraReports.)
 // Returns the moved worklog's event ID, and a note for the audit record when
 // Jira does not show the SDM as the copy's updater.
-func (wr *worklogWriter) move(ctx context.Context, fromKey string, before *JiraWorklog, toKey string, start time.Time, durationSeconds int, description string) (string, string, error) {
+func (wr *worklogWriter) move(ctx context.Context, fromKey string, before *JiraWorklog, toKey string, start time.Time, durationSeconds int, description *string) (string, string, error) {
 	author, err := wr.authorClient()
 	if err != nil {
 		return "", "", err
@@ -247,30 +247,23 @@ func (wr *worklogWriter) checkMove(ctx context.Context, fromKey, toKey string) e
 	return wr.requirePermissions(ctx, wr.edit, false, fromKey, permDeleteAllWorklogs)
 }
 
-// update changes another user's worklog with the SDM's access, keeping its
-// stored comment unless the description was edited
-func (wr *worklogWriter) update(ctx context.Context, issueKey string, before *JiraWorklog, start time.Time, durationSeconds int, description string) error {
+// update changes a worklog with the signed-in user's access (an SDM's own on
+// someone else's calendar), keeping its stored comment unless the
+// description was edited
+func (wr *worklogWriter) update(ctx context.Context, issueKey string, before *JiraWorklog, start time.Time, durationSeconds int, description *string) error {
 	_, err := wr.edit.putWorklog(ctx, issueKey, before.ID, worklogBody(formatJiraDateTime(start), durationSeconds, commentFor(before, description)))
 	return err
 }
 
 // commentFor is the comment to save for a worklog: the one Jira stores when
-// the description was left alone (the dialog only shows its first line, so
-// saving that would cut a longer comment down), otherwise the new description
-func commentFor(wl *JiraWorklog, description string) interface{} {
-	if wl != nil && description == wl.description() {
+// no description was sent (drag/resize) or it wasn't edited, so formatting,
+// mentions, images and the like survive; otherwise the new description as
+// plain text. description is nil when not sent.
+func commentFor(wl *JiraWorklog, description *string) interface{} {
+	if description == nil || *description == wl.description() {
 		return rawComment(wl.RawComment)
 	}
-	return descriptionComment(description)
-}
-
-// description returns a worklog comment's first line of text, which is what
-// the edit dialog shows and saves
-func (wl *JiraWorklog) description() string {
-	if wl.Comment != nil && len(wl.Comment.Content) > 0 && len(wl.Comment.Content[0].Content) > 0 {
-		return wl.Comment.Content[0].Content[0].Text
-	}
-	return ""
+	return descriptionComment(*description)
 }
 
 // worklogIDPattern matches Jira worklog IDs

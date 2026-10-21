@@ -44,15 +44,19 @@ type Issue struct {
 
 // CalendarEvent represents a worklog as a calendar event
 type CalendarEvent struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	Start        time.Time `json:"start"`
-	End          time.Time `json:"end"`
-	IssueKey     string    `json:"issue_key"`
-	IssueID      string    `json:"issue_id"`
-	WorklogID    string    `json:"worklog_id"`
-	Description  string    `json:"description,omitempty"`
-	FromJiraTime bool      `json:"from_jiratime"`
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Start     time.Time `json:"start"`
+	End       time.Time `json:"end"`
+	IssueKey  string    `json:"issue_key"`
+	IssueID   string    `json:"issue_id"`
+	WorklogID string    `json:"worklog_id"`
+	// The whole worklog comment as plain text (see adfText)
+	Description string `json:"description,omitempty"`
+	// Set when the comment has formatting, mentions, images, etc. that
+	// editing the description (saved as plain text) would lose
+	CommentFormatted bool `json:"comment_formatted,omitempty"`
+	FromJiraTime     bool `json:"from_jiratime"`
 	// Set when the worklog lives on a configured sub-task (see the
 	// billable_subtasks / non_billable_subtasks project properties)
 	ParentKey       string `json:"parent_key,omitempty"`
@@ -83,7 +87,9 @@ type CreateEventReq struct {
 type UpdateEventReq struct {
 	Start       string `json:"start,omitempty"` // ISO 8601 format
 	DurationMin int    `json:"duration_min,omitempty"`
-	Description string `json:"description,omitempty"`
+	// Sent by dialog saves only; drag/resize leave it out so the stored
+	// comment is never rewritten by them
+	Description *string `json:"description,omitempty"`
 	// Sub-task association, only honoured when ParentKey is set (dialog saves).
 	// Drag/resize updates omit ParentKey and keep the worklog where it is.
 	ParentKey     string `json:"parent_key,omitempty"`
@@ -295,18 +301,12 @@ type JiraIssueType struct {
 }
 
 type JiraWorklog struct {
-	ID               string `json:"id"`
-	IssueID          string `json:"issueId"`
-	TimeSpentSeconds int    `json:"timeSpentSeconds"`
-	Started          string `json:"started"` // Format: 2021-01-17T12:34:00.000+0000
-	Comment          *struct {
-		Content []struct {
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"content"`
-	} `json:"comment,omitempty"`
-	Author struct {
+	ID               string   `json:"id"`
+	IssueID          string   `json:"issueId"`
+	TimeSpentSeconds int      `json:"timeSpentSeconds"`
+	Started          string   `json:"started"` // Format: 2021-01-17T12:34:00.000+0000
+	Comment          *adfNode `json:"comment,omitempty"`
+	Author           struct {
 		AccountID string `json:"accountId"`
 	} `json:"author"`
 	// Only populated when fetched with expand=properties

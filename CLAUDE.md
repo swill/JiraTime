@@ -91,7 +91,7 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - Mobile responsive (auto-collapse sidebar, switch to day view)
 
 ### Mobile Interactions
-- **Tap-to-create:** Tap issue in sidebar to select, then tap calendar to create entry
+- **Tap-to-create:** Tap issue in sidebar to select, then tap calendar to open the new-entry dialog
 - **Single tap on event:** Select event (enables drag/resize handles)
 - **Double tap on event:** Open edit dialog
 
@@ -118,10 +118,20 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - Configurable hours target via `HOURS_TARGET` config (default: 40)
 
 ### Drag-to-Create Behavior
-- When dragging an issue onto the calendar (same for mobile tap-to-create):
-  - If the project has no configured sub-tasks: create entry immediately (30-min default)
-  - If the project has billable or non-billable sub-tasks: open the edit dialog so a sub-task can be chosen
+- Dragging an issue onto the calendar (same for mobile tap-to-create) always opens the edit dialog for a new 30-minute entry (`openNewEntryDialog`), with the cursor in Description; projects with billable or non-billable sub-tasks also show the sub-task choices
 - Resizing or moving updates the entry in place (never changes the sub-task association)
+
+### Required Description
+- Every entry needs a description (the worklog comment). Jira can't make one mandatory, so JiraTime does
+- Dialog: the Description field is `required` and whitespace-only counts as empty; split mode doesn't check it (the fields are read-only and the split copies the stored comment). Opening an existing entry without one puts the cursor there
+- Server: `POST /api/events` returns 400 `descriptionRequired` without one, and so does a `PUT` that sends a blank `description` (dialog saves always send it). Drag/resize updates leave `description` out (`UpdateEventReq.Description` is a pointer) and splits aren't checked, so entries logged without a description (older ones, or from Jira) can still be moved, resized and split
+- Shift+drag copy of an entry without a description opens the new-entry dialog (with the copy's start and duration) instead of copying straight away; copies of formatted comments are saved as plain text
+
+### Worklog Comments (Description)
+- The description is the **whole** comment as plain text, so time entered in Jira never looks lost: `adfText` (adf.go) renders the Atlassian Document Format comment one line per paragraph, keeping mentions, emoji, dates (ISO), link addresses (`text (url)`), list/task markers, code, quotes, tables (`a | b`) and panel/expand content; images and files show as `[attachment: alt]`, and nodes with no text form as `[type]`. `JiraWorklog.Comment` is the parsed `adfNode` tree
+- Saving: `commentFor` keeps the stored comment (`RawComment`, written back byte-for-byte) when no description was sent (drag/resize) or it equals `adfText` of the current comment; otherwise `buildADFComment` saves the new text, one paragraph per line. Updates and moves on any calendar fetch the worklog first (`wr.loadWorklog`) for this
+- `adfText` normalizes \r\n/\r to \n, as a textarea does, so an unedited description always matches. `adfText(buildADFComment(s))` round-trips
+- `comment_formatted` (`adfFormatted`: anything beyond plain paragraphs, unmarked text and line breaks) shows a note in the dialog that editing saves plain text; the description field grows to fit the comment (`fitDescription`, capped at 40vh, then scrolls)
 
 ### Billable & Non-billable Sub-tasks
 - Two mirror-image modes reclassify logged time by routing the worklog to a sub-task. Both are stored in the `jirametadata` project property and managed by the companion `../jirametadata` Forge app:
@@ -131,7 +141,7 @@ The `../betterwork` codebase is useful for understanding the existing functional
 - Why a configured type isn't offered is logged once per project/type (`warnOnce`): not a sub-task type in the project's scheme, not an issue type the user can see, or a jirametadata field with "subtask" in its key that isn't one JiraTime reads; opening a non-configured sub-task in a configured project logs at info
 - The two modes share one code path; the only user-facing difference is the dialog label (`subtask_mode` in the API response drives "Billable via Sub-task" vs "Non-billable via Sub-task")
 - `GET /api/issues/{key}/subtask-options` returns the checkbox choices (`subtask_types`) and `subtask_mode` for the edit dialog; a configured sub-task resolves to its parent with `current_type_id`/`current_subtask` pre-set
-- When configured, drag/tap-to-create opens the edit dialog instead of logging immediately; the dialog shows one checkbox per type (radio-behaving, deselectable) plus a nested list of the parent's existing sub-tasks of the selected type
+- When configured, the edit dialog (which drag/tap-to-create always opens) shows one checkbox per type (radio-behaving, deselectable) plus a nested list of the parent's existing sub-tasks of the selected type
 - Type selected without a specific sub-task → get-or-create a sub-task named after the type (case-insensitive summary match); no type selected → worklog goes on the parent
 - Worklog target resolution and validation happen server-side (`findWorklogTarget` in handlers.go); finding the target and creating a missing sub-task (`createIfNeeded`) are separate so SDM changes can be checked before anything is created
 - Changing the association on an existing entry moves the worklog. On your own calendar: create on target first, then delete the original, rolling back the copy (with retries) if the delete fails (`moveWorklog`); moved worklogs are marked JiraTime-created. Jira's worklog move API is not used anywhere (see SDM Editing)

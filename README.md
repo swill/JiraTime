@@ -165,9 +165,14 @@ JiraTime includes a `make deploy` command for deploying to a remote Linux server
 **From the Sidebar:**
 1. Find an issue in "Active Issues" or "Recent Issues"
 2. Drag the issue onto the calendar at the desired time
-3. A 30-minute entry is created automatically
+3. The edit dialog opens for a 30-minute entry, with the cursor in **Description**
+4. Describe the work, adjust the start or duration if needed, and click **Save**
 
-If the issue's project has billable or non-billable sub-tasks configured (see [Billable & Non-billable Sub-tasks](#billable--non-billable-sub-tasks)), the edit dialog opens instead so you can choose where the time goes before the entry is created.
+Every entry needs a description. Jira can't make worklog comments mandatory, so JiraTime does: Save won't go ahead until there is one. Entries logged without one (older entries, or time logged in Jira) can still be dragged and resized, but saving them from the dialog needs a description.
+
+The description is the entry's **whole** worklog comment, including comments written in Jira: every paragraph, plus mentions, links (shown as `text (address)`), lists, tables and code as plain text. Images and files show as `[attachment]`. Dragging and resizing never change the comment, and saving from the dialog without editing the description keeps it exactly as Jira stores it. If a comment has formatting from Jira (links, mentions, lists, images, ...), the dialog says so: changing the text there saves the comment as plain text.
+
+If the issue's project has billable or non-billable sub-tasks configured (see [Billable & Non-billable Sub-tasks](#billable--non-billable-sub-tasks)), the dialog also lets you choose where the time goes.
 
 **By Selecting Time:**
 1. Click and drag on the calendar to select a time range
@@ -177,7 +182,7 @@ If the issue's project has billable or non-billable sub-tasks configured (see [B
 
 - **Move**: Drag an event to a new time
 - **Resize**: Drag the bottom edge of an event to change duration
-- **Copy**: Hold Shift while dragging to duplicate
+- **Copy**: Hold Shift while dragging to duplicate (copying an entry that has no description opens the dialog so you can add one)
 - **Edit Details**: Click an event to open the edit dialog
 - **Delete**: Click an event, then click "Delete" in the dialog
 
@@ -195,7 +200,7 @@ On mobile devices (screen width < 768px):
 1. Tap the hamburger menu (☰) to open the sidebar
 2. Tap an issue to select it (it will highlight blue)
 3. The sidebar auto-closes and a toast message appears
-4. Tap on the calendar at the desired time to create a 30-minute entry
+4. Tap on the calendar at the desired time, then add a description to the new 30-minute entry and tap Save
 5. Tap a selected issue again to deselect it
 
 **Editing entries:**
@@ -256,7 +261,7 @@ GET /rest/api/3/project/{key}/properties/jirametadata
 
 A project is billable *or* non-billable, so it uses one mode or the other — never both. The values are sub-task issue type IDs. When a project has either field configured, the behaviour is identical apart from the dialog label ("Billable via Sub-task" vs "Non-billable via Sub-task"):
 
-- **Creating an entry** (drag or tap) opens the edit dialog with a checkbox per configured sub-task type. Only one type can be selected at a time, and a checkbox can be unticked again.
+- **Creating an entry** (drag or tap) shows a checkbox per configured sub-task type in the edit dialog. Only one type can be selected at a time, and a checkbox can be unticked again.
 - Selecting a type reveals the parent issue's **existing sub-tasks of that type** (all statuses, shown with a status badge). Ticking one logs the time against that specific sub-task's worklog.
 - If a type is selected but no specific sub-task is ticked, the time goes to a sub-task **named after the type** (e.g. a "Non-billable Work" sub-task) — reused if it already exists under the parent, created if not.
 - If no type is selected, the time is logged against the parent issue as before.
@@ -264,7 +269,7 @@ A project is billable *or* non-billable, so it uses one mode or the other — ne
 - Changing the checkboxes on an existing entry **moves** the worklog (to the parent when unticked, or to the selected sub-task). On your own calendar this is done as create-then-delete (Jira's worklog move API isn't used, because reporting that syncs from Jira's worklog change feeds doesn't see its moves): the copy is created first and rolled back if the delete fails, so time is never lost or double-counted. A moved entry counts as JiraTime-created (solid border), even if it was originally logged in Jira. SDMs' moves work the same way, using two sign-ins; see [SDM Editing](#sdm-editing).
 - Dragging a configured sub-task itself from the sidebar resolves it to its parent, with the sub-task pre-checked in the dialog.
 
-Projects with neither field behave exactly as before — dragging creates the entry immediately and the dialog shows no checkboxes. The property and issue-type lookups are cached for 15 minutes; use the sidebar **Refresh** button to pick up configuration changes immediately.
+Projects with neither field show no checkboxes in the dialog. The property and issue-type lookups are cached for 15 minutes; use the sidebar **Refresh** button to pick up configuration changes immediately.
 
 #### Setting up a project's sub-task types (order matters)
 
@@ -429,8 +434,8 @@ jiratime/
 | GET | `/oauth/callback` | OAuth callback handler |
 | GET | `/logout` | Clear session and logout |
 | GET | `/api/events?start=X&end=Y` | Get worklogs for date range |
-| POST | `/api/events` | Create a worklog |
-| PUT | `/api/events/{id}` | Update a worklog (moves it when the dialog picks another issue or sub-task) |
+| POST | `/api/events` | Create a worklog (`description` is required) |
+| PUT | `/api/events/{id}` | Update a worklog (moves it when the dialog picks another issue or sub-task). `description` is optional: left out, the comment is kept as stored; sent, it can't be blank |
 | POST | `/api/events/{id}/split` | Split a worklog `{duration_min, parent_key, subtask_type_id?, subtask_key?}` |
 | DELETE | `/api/events/{id}` | Delete a worklog |
 | GET | `/api/issues` | Get issues assigned to current user |
